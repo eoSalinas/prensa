@@ -118,6 +118,17 @@ fn optimize(input: &Path, output: &Path, cfg: &images::Config) -> Result<Stats> 
     writer.start_file("mimetype", stored)?;
     writer.write_all(b"application/epub+zip")?;
 
+    // Files that survive the passes, used to drop directory entries left empty
+    // (e.g. `fonts/` after removing the fonts inside it).
+    let names = (0..archive.len())
+        .map(|i| Ok(archive.by_index_raw(i)?.name()?.into_owned()))
+        .collect::<Result<Vec<String>>>()?;
+    let kept_files: Vec<&str> = names
+        .iter()
+        .filter(|n| !n.ends_with('/') && !matches!(decide(n), Action::Skip))
+        .map(String::as_str)
+        .collect();
+
     let mut stats = Stats::default();
     for i in 0..archive.len() {
         // `by_index_raw` borrows `archive` mutably: one entry at a time.
@@ -126,6 +137,13 @@ fn optimize(input: &Path, output: &Path, cfg: &images::Config) -> Result<Stats> 
             let entry = archive.by_index_raw(i)?;
             (entry.name()?.into_owned(), entry.size())
         };
+
+        if name.ends_with('/') {
+            if kept_files.iter().any(|f| f.starts_with(name.as_str())) {
+                writer.raw_copy_file(archive.by_index_raw(i)?)?;
+            }
+            continue;
+        }
 
         match decide(&name) {
             Action::Skip => {
