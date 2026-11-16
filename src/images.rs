@@ -13,43 +13,15 @@ use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
 use image::imageops::FilterType;
 use image::{DynamicImage, ExtendedColorType, GrayImage, ImageEncoder, ImageFormat, Luma};
 
-// Defaults chosen on an X4 Pro (CrossPoint) by comparing Q85, Q92, Q92+sharpen and
-// Q92+sharpen+440 on the same diagram page: the last one won.
-// 440x733 sits close to the reader viewport (480 minus bezel and margins), so the
-// device does not resample again with its low-quality fixed-point scaler.
-pub const DEFAULT_MAX_WIDTH: u32 = 440;
-pub const DEFAULT_MAX_HEIGHT: u32 = 733;
-pub const DEFAULT_JPEG_QUALITY: u8 = 92;
-pub const DEFAULT_SHARPEN: f32 = 0.8;
-
-/// Pass parameters.
-#[derive(Debug, Clone, Copy)]
-pub struct Config {
-    pub max_width: u32,
-    pub max_height: u32,
-    pub jpeg_quality: u8,
-    /// Unsharp mask sigma applied after downscaling. `0` disables sharpening.
-    pub sharpen: f32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            max_width: DEFAULT_MAX_WIDTH,
-            max_height: DEFAULT_MAX_HEIGHT,
-            jpeg_quality: DEFAULT_JPEG_QUALITY,
-            sharpen: DEFAULT_SHARPEN,
-        }
-    }
-}
+use crate::Options;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Kind {
+pub(crate) enum Kind {
     Jpeg,
     Png,
 }
 
-pub fn kind_of(name: &str) -> Option<Kind> {
+pub(crate) fn kind_of(name: &str) -> Option<Kind> {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
         Some(Kind::Jpeg)
@@ -61,7 +33,7 @@ pub fn kind_of(name: &str) -> Option<Kind> {
 }
 
 /// Look for the SOF marker: `FFC2` = progressive, `FFC0`/`FFC1` = baseline.
-pub fn is_progressive_jpeg(data: &[u8]) -> bool {
+pub(crate) fn is_progressive_jpeg(data: &[u8]) -> bool {
     let mut i = 2; // skip SOI (FFD8)
     while i + 4 <= data.len() {
         if data[i] != 0xFF {
@@ -81,7 +53,7 @@ pub fn is_progressive_jpeg(data: &[u8]) -> bool {
 }
 
 /// Grayscale with alpha flattened onto white, downscaled to fit the box.
-fn to_screen_gray(img: &DynamicImage, cfg: &Config) -> GrayImage {
+fn to_screen_gray(img: &DynamicImage, opts: &Options) -> GrayImage {
     let gray = if img.color().has_alpha() {
         let rgba = img.to_rgba8();
         GrayImage::from_fn(img.width(), img.height(), |x, y| {
@@ -94,28 +66,28 @@ fn to_screen_gray(img: &DynamicImage, cfg: &Config) -> GrayImage {
         img.to_luma8()
     };
 
-    let resized = gray.width() > cfg.max_width || gray.height() > cfg.max_height;
+    let resized = gray.width() > opts.max_width || gray.height() > opts.max_height;
     let gray = if resized {
         // `resize` keeps the aspect ratio and fits inside the box.
-        DynamicImage::ImageLuma8(gray).resize(cfg.max_width, cfg.max_height, FilterType::Lanczos3).into_luma8()
+        DynamicImage::ImageLuma8(gray).resize(opts.max_width, opts.max_height, FilterType::Lanczos3).into_luma8()
     } else {
         gray
     };
 
     // Sharpen only after downscaling (offsets Lanczos softening).
-    if resized && cfg.sharpen > 0.0 {
-        image::imageops::unsharpen(&gray, cfg.sharpen, 2)
+    if resized && opts.sharpen > 0.0 {
+        image::imageops::unsharpen(&gray, opts.sharpen, 2)
     } else {
         gray
     }
 }
 
-fn encode(kind: Kind, img: &GrayImage, cfg: &Config) -> Result<Vec<u8>> {
+fn encode(kind: Kind, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let (w, h) = img.dimensions();
     match kind {
         // The `image` crate's JPEG encoder only emits baseline.
-        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, cfg.jpeg_quality).write_image(img.as_raw(), w, h, ExtendedColorType::L8)?,
+        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality).write_image(img.as_raw(), w, h, ExtendedColorType::L8)?,
         Kind::Png => PngEncoder::new_with_quality(&mut out, CompressionType::Best, PngFilter::Adaptive)
             .write_image(img.as_raw(), w, h, ExtendedColorType::L8)?,
     }
@@ -123,7 +95,7 @@ fn encode(kind: Kind, img: &GrayImage, cfg: &Config) -> Result<Vec<u8>> {
 }
 
 /// Returns `Ok(None)` when the original should be kept as-is.
-pub fn optimize(kind: Kind, data: &[u8], cfg: &Config) -> Result<Option<Vec<u8>>> {
+pub(crate) fn optimize(kind: Kind, data: &[u8], opts: &Options) -> Result<Option<Vec<u8>>> {
     let format = match kind {
         Kind::Jpeg => ImageFormat::Jpeg,
         Kind::Png => ImageFormat::Png,
@@ -131,10 +103,10 @@ pub fn optimize(kind: Kind, data: &[u8], cfg: &Config) -> Result<Option<Vec<u8>>
     let img = image::load_from_memory_with_format(data, format)?;
 
     // Cases where the change is required even if the file grows.
-    let too_big = img.width() > cfg.max_width || img.height() > cfg.max_height;
+    let too_big = img.width() > opts.max_width || img.height() > opts.max_height;
     let progressive = kind == Kind::Jpeg && is_progressive_jpeg(data);
 
-    let out = encode(kind, &to_screen_gray(&img, cfg), cfg)?;
+    let out = encode(kind, &to_screen_gray(&img, opts), opts)?;
     if out.len() >= data.len() && !too_big && !progressive {
         return Ok(None);
     }
@@ -160,7 +132,7 @@ mod tests {
 
     #[test]
     fn downscales_to_fit_keeping_aspect_ratio() {
-        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Config::default()).unwrap().unwrap();
+        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Options::default()).unwrap().unwrap();
         let img = decode(&out);
         assert_eq!((img.width(), img.height()), (440, 220));
         assert!(!img.color().has_color());
@@ -169,7 +141,7 @@ mod tests {
 
     #[test]
     fn never_upscales() {
-        let out = optimize(Kind::Jpeg, &colorful_jpeg(100, 50), &Config::default()).unwrap();
+        let out = optimize(Kind::Jpeg, &colorful_jpeg(100, 50), &Options::default()).unwrap();
         if let Some(out) = out {
             assert_eq!(decode(&out).width(), 100);
         }
@@ -180,7 +152,7 @@ mod tests {
         let img = RgbaImage::from_pixel(10, 10, Rgba([0, 0, 0, 0]));
         let mut png = Vec::new();
         DynamicImage::ImageRgba8(img).write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
-        let out = optimize(Kind::Png, &png, &Config::default()).unwrap().unwrap();
+        let out = optimize(Kind::Png, &png, &Options::default()).unwrap().unwrap();
         let gray = decode(&out).to_luma8();
         assert!(gray.pixels().all(|p| p.0[0] == 255));
     }
