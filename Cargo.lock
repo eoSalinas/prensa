@@ -1143,6 +1143,7 @@ dependencies = [
  "quick-xml",
  "regex",
  "tempfile",
+ "thiserror",
  "zip",
 ]
 

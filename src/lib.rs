@@ -11,13 +11,16 @@
 //! let output = File::create("book-optimized.epub")?;
 //! let report = prensa::optimize(input, output, &prensa::Options::default())?;
 //! println!("{} image(s) optimized", report.images_changed);
-//! # Ok::<(), anyhow::Error>(())
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod error;
 mod fonts;
 mod images;
 
-use anyhow::{Context, Result};
+pub use error::{Error, Source};
+
+use error::from_zip;
 use std::io::{Read, Seek, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -79,7 +82,7 @@ enum Action {
     Skip,
     CopyRaw,
     /// `Ok(None)` means the entry is dropped from the output.
-    Rewrite(fn(&str) -> Result<Option<String>>),
+    Rewrite(fn(&str) -> anyhow::Result<Option<String>>),
     Image(images::Kind),
 }
 
@@ -108,24 +111,31 @@ fn decide(name: &str) -> Action {
 /// The output follows the EPUB container (OCF) rules: `mimetype` is the first
 /// entry and is stored uncompressed. On error, `output` may hold a partial
 /// file; callers writing to disk should write to a temporary file and rename it.
-pub fn optimize<R, W>(input: R, output: W, opts: &Options) -> Result<Report>
+pub fn optimize<R, W>(input: R, output: W, opts: &Options) -> Result<Report, Error>
 where
     R: Read + Seek,
     W: Write + Seek,
 {
-    let mut archive = ZipArchive::new(input).context("input is not a valid zip")?;
+    let mut archive = ZipArchive::new(input).map_err(|e| Error::InvalidZip(Box::new(e)))?;
     let mut writer = ZipWriter::new(output);
 
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    writer.start_file("mimetype", stored)?;
+    writer.start_file("mimetype", stored).map_err(from_zip)?;
     writer.write_all(b"application/epub+zip")?;
 
     // Files that survive the passes, used to drop directory entries left empty
     // (e.g. `fonts/` after removing the fonts inside it).
     let names = (0..archive.len())
-        .map(|i| Ok(archive.by_index_raw(i)?.name()?.into_owned()))
-        .collect::<Result<Vec<String>>>()?;
+        .map(|i| {
+            Ok(archive
+                .by_index_raw(i)
+                .map_err(from_zip)?
+                .name()
+                .map_err(from_zip)?
+                .into_owned())
+        })
+        .collect::<Result<Vec<String>, Error>>()?;
     let kept_files: Vec<&str> = names
         .iter()
         .filter(|n| !n.ends_with('/') && !matches!(decide(n), Action::Skip))
@@ -137,13 +147,15 @@ where
         // `by_index_raw` borrows `archive` mutably: one entry at a time.
         // `into_owned` copies the name so the borrow ends here.
         let (name, size) = {
-            let entry = archive.by_index_raw(i)?;
-            (entry.name()?.into_owned(), entry.size())
+            let entry = archive.by_index_raw(i).map_err(from_zip)?;
+            (entry.name().map_err(from_zip)?.into_owned(), entry.size())
         };
 
         if name.ends_with('/') {
             if kept_files.iter().any(|f| f.starts_with(name.as_str())) {
-                writer.raw_copy_file(archive.by_index_raw(i)?)?;
+                writer
+                    .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
+                    .map_err(from_zip)?;
             }
             continue;
         }
@@ -156,35 +168,49 @@ where
                 }
             }
             // Copy the compressed bytes as-is, without decompressing and recompressing.
-            Action::CopyRaw => writer.raw_copy_file(archive.by_index_raw(i)?)?,
+            Action::CopyRaw => writer
+                .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
+                .map_err(from_zip)?,
             Action::Rewrite(transform) => {
                 let mut bytes = Vec::new();
-                archive.by_index(i)?.read_to_end(&mut bytes)?;
+                archive
+                    .by_index(i)
+                    .map_err(from_zip)?
+                    .read_to_end(&mut bytes)?;
                 match String::from_utf8(bytes) {
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
                         // (font removed but still listed in the manifest).
-                        let result =
-                            transform(&text).with_context(|| format!("processing {name}"))?;
+                        let result = transform(&text).map_err(|e| Error::Malformed {
+                            entry: name.clone(),
+                            source: e.into(),
+                        })?;
                         if let Some(new_text) = result {
-                            writer.start_file(name.as_str(), deflated)?;
+                            writer
+                                .start_file(name.as_str(), deflated)
+                                .map_err(from_zip)?;
                             writer.write_all(new_text.as_bytes())?;
                         }
                     }
                     // Not UTF-8: do not risk it, copy unchanged.
-                    Err(_) => writer.raw_copy_file(archive.by_index_raw(i)?)?,
+                    Err(_) => writer
+                        .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
+                        .map_err(from_zip)?,
                 }
             }
             Action::Image(kind) => {
                 let mut bytes = Vec::new();
-                archive.by_index(i)?.read_to_end(&mut bytes)?;
+                archive
+                    .by_index(i)
+                    .map_err(from_zip)?
+                    .read_to_end(&mut bytes)?;
                 report.image_bytes_before += size;
                 match images::optimize(kind, &bytes, opts) {
                     Ok(Some(new_bytes)) => {
                         report.images_changed += 1;
                         report.image_bytes_after += new_bytes.len() as u64;
                         // JPEG/PNG are already compressed: deflating them again only costs CPU.
-                        writer.start_file(name.as_str(), stored)?;
+                        writer.start_file(name.as_str(), stored).map_err(from_zip)?;
                         writer.write_all(&new_bytes)?;
                     }
                     // An image that fails to decode does not fail the book: it stays as it was.
@@ -196,14 +222,16 @@ where
                             Ok(_) => report.images_kept += 1,
                         }
                         report.image_bytes_after += size;
-                        writer.raw_copy_file(archive.by_index_raw(i)?)?;
+                        writer
+                            .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
+                            .map_err(from_zip)?;
                     }
                 }
             }
         }
     }
 
-    writer.finish()?;
+    writer.finish().map_err(from_zip)?;
     Ok(report)
 }
 
@@ -238,7 +266,7 @@ mod tests {
 
     /// Build a minimal EPUB in memory: chapters, optional embedded font + @font-face,
     /// optional obfuscation entry.
-    fn build_epub(chapters: &[Vec<String>], font: Option<&[u8]>) -> Result<Vec<u8>> {
+    fn build_epub(chapters: &[Vec<String>], font: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         zip.start_file("mimetype", stored)?;
@@ -327,6 +355,22 @@ mod tests {
     #[test]
     fn rejects_non_zip_input() {
         let mut output = Cursor::new(Vec::new());
-        assert!(optimize(Cursor::new(b"not a zip"), &mut output, &Options::default()).is_err());
+        let err = optimize(Cursor::new(b"not a zip"), &mut output, &Options::default());
+        assert!(matches!(err, Err(Error::InvalidZip(_))));
+    }
+
+    #[test]
+    fn broken_opf_names_the_entry() {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("OEBPS/content.opf", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"<package><manifest></package>").unwrap();
+        let input = zip.finish().unwrap().into_inner();
+
+        let mut output = Cursor::new(Vec::new());
+        match optimize(Cursor::new(input), &mut output, &Options::default()) {
+            Err(Error::Malformed { entry, .. }) => assert_eq!(entry, "OEBPS/content.opf"),
+            other => panic!("expected Malformed, got {other:?}"),
+        }
     }
 }
