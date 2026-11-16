@@ -164,7 +164,8 @@ where
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
                         // (font removed but still listed in the manifest).
-                        let result = transform(&text).with_context(|| format!("processing {name}"))?;
+                        let result =
+                            transform(&text).with_context(|| format!("processing {name}"))?;
                         if let Some(new_text) = result {
                             writer.start_file(name.as_str(), deflated)?;
                             writer.write_all(new_text.as_bytes())?;
@@ -189,7 +190,9 @@ where
                     // An image that fails to decode does not fail the book: it stays as it was.
                     result => {
                         match result {
-                            Err(e) => report.warnings.push(format!("{name}: {e:#}; copied unchanged")),
+                            Err(e) => report
+                                .warnings
+                                .push(format!("{name}: {e:#}; copied unchanged")),
                             Ok(_) => report.images_kept += 1,
                         }
                         report.image_bytes_after += size;
@@ -213,7 +216,9 @@ mod tests {
     use std::io::Cursor;
 
     fn escape(text: &str) -> String {
-        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
     }
 
     /// Text a reader would show: XHTML text nodes and entity references, in order.
@@ -241,7 +246,8 @@ mod tests {
         zip.start_file("META-INF/container.xml", stored)?;
         zip.write_all(br#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>"#)?;
 
-        let mut manifest = String::from(r#"<item href="style.css" id="css" media-type="text/css"/>"#);
+        let mut manifest =
+            String::from(r#"<item href="style.css" id="css" media-type="text/css"/>"#);
         let mut css = String::from("p { margin: 0 }\n");
         if let Some(bytes) = font {
             manifest.push_str(r#"<item href="fonts/f.ttf" id="font" media-type="font/ttf"/>"#);
@@ -252,8 +258,13 @@ mod tests {
             zip.write_all(br#"<encryption><EncryptedData><CipherReference URI="OEBPS/fonts/f.ttf"/></EncryptedData></encryption>"#)?;
         }
         for (i, paragraphs) in chapters.iter().enumerate() {
-            manifest.push_str(&format!(r#"<item href="ch{i}.xhtml" id="ch{i}" media-type="application/xhtml+xml"/>"#));
-            let body: String = paragraphs.iter().map(|p| format!("<p>{}</p>", escape(p))).collect();
+            manifest.push_str(&format!(
+                r#"<item href="ch{i}.xhtml" id="ch{i}" media-type="application/xhtml+xml"/>"#
+            ));
+            let body: String = paragraphs
+                .iter()
+                .map(|p| format!("<p>{}</p>", escape(p)))
+                .collect();
             zip.start_file(format!("OEBPS/ch{i}.xhtml"), stored)?;
             zip.write_all(format!(r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#).as_bytes())?;
         }

@@ -14,10 +14,16 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 const FONT_EXTS: [&str; 4] = [".ttf", ".otf", ".woff", ".woff2"];
-const FONT_MEDIA_TYPES: [&str; 4] = ["font/", "application/font-", "application/x-font-", "application/vnd.ms-opentype"];
+const FONT_MEDIA_TYPES: [&str; 4] = [
+    "font/",
+    "application/font-",
+    "application/x-font-",
+    "application/vnd.ms-opentype",
+];
 
 /// Compiled once, on first use.
-static FONT_FACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap());
+static FONT_FACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap());
 
 pub fn is_font(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -40,7 +46,9 @@ fn is_font_item(e: &BytesStart) -> Result<bool> {
         return Ok(true);
     }
     if let Some(media) = e.try_get_attribute("media-type")? {
-        let media = media.normalized_value(XmlVersion::Implicit1_0)?.to_ascii_lowercase();
+        let media = media
+            .normalized_value(XmlVersion::Implicit1_0)?
+            .to_ascii_lowercase();
         return Ok(FONT_MEDIA_TYPES.iter().any(|t| media.starts_with(t)));
     }
     Ok(false)
@@ -81,9 +89,12 @@ pub fn clean_encryption(xml: &str) -> Result<Option<String>> {
                 loop {
                     let event = reader.read_event()?;
                     match &event {
-                        Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "CipherReference" => {
+                        Event::Start(e) | Event::Empty(e)
+                            if e.local_name().as_ref() == "CipherReference" =>
+                        {
                             if let Some(uri) = e.try_get_attribute("URI")? {
-                                points_to_font |= is_font(&uri.normalized_value(XmlVersion::Implicit1_0)?);
+                                points_to_font |=
+                                    is_font(&uri.normalized_value(XmlVersion::Implicit1_0)?);
                             }
                         }
                         Event::Eof => bail!("encryption.xml: unclosed <EncryptedData>"),
@@ -161,8 +172,13 @@ mod tests {
     #[test]
     fn encryption_with_other_entries_is_kept() {
         let xml = r#"<encryption><EncryptedData><CipherReference URI="a.ttf"/></EncryptedData><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#;
-        let out = clean_encryption(xml).unwrap().expect("still has encrypted content");
-        assert_eq!(out, r#"<encryption><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#);
+        let out = clean_encryption(xml)
+            .unwrap()
+            .expect("still has encrypted content");
+        assert_eq!(
+            out,
+            r#"<encryption><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#
+        );
     }
 
     #[test]

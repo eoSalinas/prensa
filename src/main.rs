@@ -52,11 +52,15 @@ fn optimize_file(input: &Path, output: &Path, opts: &Options) -> Result<Report> 
     if input_real == output.canonicalize().unwrap_or_default() {
         bail!("output must not be the input file");
     }
-    let reader = BufReader::new(File::open(input).with_context(|| format!("opening {}", input.display()))?);
+    let reader =
+        BufReader::new(File::open(input).with_context(|| format!("opening {}", input.display()))?);
 
     // Atomic write: write to a temp file in the same directory and rename at the end.
     // If anything fails midway, the temp file is deleted and `output` is never half-written.
-    let dir = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     let report = prensa::optimize(reader, &mut tmp, opts)?;
     tmp.persist(output)
@@ -69,7 +73,11 @@ fn print_report(report: &Report) {
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
     }
-    println!("fonts removed: {} file(s), {:.1} MB", report.fonts_removed, mb(report.font_bytes));
+    println!(
+        "fonts removed: {} file(s), {:.1} MB",
+        report.fonts_removed,
+        mb(report.font_bytes)
+    );
     println!(
         "images: {} optimized, {} kept, {:.1} -> {:.1} MB",
         report.images_changed,

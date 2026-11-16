@@ -69,7 +69,9 @@ fn to_screen_gray(img: &DynamicImage, opts: &Options) -> GrayImage {
     let resized = gray.width() > opts.max_width || gray.height() > opts.max_height;
     let gray = if resized {
         // `resize` keeps the aspect ratio and fits inside the box.
-        DynamicImage::ImageLuma8(gray).resize(opts.max_width, opts.max_height, FilterType::Lanczos3).into_luma8()
+        DynamicImage::ImageLuma8(gray)
+            .resize(opts.max_width, opts.max_height, FilterType::Lanczos3)
+            .into_luma8()
     } else {
         gray
     };
@@ -87,9 +89,16 @@ fn encode(kind: Kind, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
     let (w, h) = img.dimensions();
     match kind {
         // The `image` crate's JPEG encoder only emits baseline.
-        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality).write_image(img.as_raw(), w, h, ExtendedColorType::L8)?,
-        Kind::Png => PngEncoder::new_with_quality(&mut out, CompressionType::Best, PngFilter::Adaptive)
-            .write_image(img.as_raw(), w, h, ExtendedColorType::L8)?,
+        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality).write_image(
+            img.as_raw(),
+            w,
+            h,
+            ExtendedColorType::L8,
+        )?,
+        Kind::Png => {
+            PngEncoder::new_with_quality(&mut out, CompressionType::Best, PngFilter::Adaptive)
+                .write_image(img.as_raw(), w, h, ExtendedColorType::L8)?
+        }
     }
     Ok(out)
 }
@@ -124,15 +133,21 @@ mod tests {
     }
 
     fn colorful_jpeg(w: u32, h: u32) -> Vec<u8> {
-        let img = RgbImage::from_fn(w, h, |x, y| Rgb([(x % 256) as u8, (y % 256) as u8, ((x * y) % 256) as u8]));
+        let img = RgbImage::from_fn(w, h, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, ((x * y) % 256) as u8])
+        });
         let mut out = Vec::new();
-        DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg).unwrap();
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg)
+            .unwrap();
         out
     }
 
     #[test]
     fn downscales_to_fit_keeping_aspect_ratio() {
-        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Options::default()).unwrap().unwrap();
+        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Options::default())
+            .unwrap()
+            .unwrap();
         let img = decode(&out);
         assert_eq!((img.width(), img.height()), (440, 220));
         assert!(!img.color().has_color());
@@ -151,8 +166,12 @@ mod tests {
     fn transparency_becomes_white() {
         let img = RgbaImage::from_pixel(10, 10, Rgba([0, 0, 0, 0]));
         let mut png = Vec::new();
-        DynamicImage::ImageRgba8(img).write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
-        let out = optimize(Kind::Png, &png, &Options::default()).unwrap().unwrap();
+        DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        let out = optimize(Kind::Png, &png, &Options::default())
+            .unwrap()
+            .unwrap();
         let gray = decode(&out).to_luma8();
         assert!(gray.pixels().all(|p| p.0[0] == 255));
     }
