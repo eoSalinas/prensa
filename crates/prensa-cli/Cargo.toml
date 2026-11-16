@@ -1,0 +1,17 @@
+[package]
+name = "prensa-cli"
+description = "Command-line interface for prensa, the EPUB optimizer for e-ink readers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "prensa"
+path = "src/main.rs"
+
+[dependencies]
+prensa = { path = "../prensa" }
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+tempfile = "3.27.0"

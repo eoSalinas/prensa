@@ -64,7 +64,7 @@ Each book takes about a second or less to process, a few seconds for Pro Git.
 Requires a Rust toolchain.
 
 ```sh
-cargo install --git https://github.com/eoSalinas/prensa
+cargo install --git https://github.com/eoSalinas/prensa prensa-cli
 ```
 
 ## Usage

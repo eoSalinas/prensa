@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// Optimize EPUBs for e-ink readers. Writes a copy; the input is never modified.
 #[derive(Parser)]
-#[command(version)]
+#[command(name = "prensa", version)]
 struct Cli {
     /// Input EPUB
     input: PathBuf,

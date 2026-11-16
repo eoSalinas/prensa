@@ -1137,14 +1137,22 @@ name = "prensa"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "image",
  "proptest",
  "quick-xml",
  "regex",
- "tempfile",
  "thiserror",
  "zip",
+]
+
+[[package]]
+name = "prensa-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "prensa",
+ "tempfile",
 ]
 
 [[package]]

@@ -1,0 +1,18 @@
+[package]
+name = "prensa"
+description = "Optimize EPUBs for e-ink readers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+image = "0.25.10"
+quick-xml = "0.42.0"
+regex = "1.13.1"
+thiserror = "2"
+zip = "9.6.0"
+
+[dev-dependencies]
+proptest = "1.12.0"
