@@ -92,6 +92,46 @@ Then copy `book-optimized.epub` to the device.
 The defaults won a side-by-side comparison on the device. They favor
 legibility over the smallest possible file.
 
+## Library
+
+The optimizer is a library crate, `prensa`; the CLI is a thin front end over
+it. `optimize` works on any `Read + Seek` input and `Write + Seek` output
+(files, in-memory buffers), never prints, and returns a report.
+
+```toml
+[dependencies]
+prensa = { git = "https://github.com/eoSalinas/prensa" }
+```
+
+```rust
+use std::fs::File;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut opts = prensa::Options::default();
+    opts.max_width = 600; // e.g. a larger screen
+
+    let input = File::open("book.epub")?;
+    let output = File::create("book-optimized.epub")?;
+    let report = prensa::optimize(input, output, &opts)?;
+
+    println!("{} image(s) optimized", report.images_changed);
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    Ok(())
+}
+```
+
+Errors are a `prensa::Error`: `InvalidZip`, `Malformed { entry, .. }` (an
+entry that must be rewritten could not be parsed) or `Io`. Unlike the CLI,
+`optimize` writes straight to `output`; write to a temporary file and rename
+it if you need atomic writes.
+
+| Crate | Path | |
+|---|---|---|
+| `prensa` | `crates/prensa` | the engine |
+| `prensa-cli` | `crates/prensa-cli` | the `prensa` binary |
+
 ## What it does
 
 - **Fonts:** removes embedded font files, their manifest entries, `@font-face`
