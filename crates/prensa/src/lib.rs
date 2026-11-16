@@ -77,6 +77,18 @@ pub struct Report {
     pub warnings: Vec<String>,
 }
 
+/// Where [`optimize_with_progress`] is in the book.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Progress<'a> {
+    /// Entries already processed.
+    pub done: usize,
+    /// Entries in the book (files and directories).
+    pub total: usize,
+    /// Path of the entry about to be processed.
+    pub entry: &'a str,
+}
+
 /// What to do with each zip entry.
 enum Action {
     Skip,
@@ -116,6 +128,24 @@ where
     R: Read + Seek,
     W: Write + Seek,
 {
+    optimize_with_progress(input, output, opts, |_| {})
+}
+
+/// Like [`optimize`], calling `on_progress` before each entry is processed.
+///
+/// The library never prints; front ends use this to draw a progress bar.
+/// Images take most of the time, so progress is not linear in entries.
+pub fn optimize_with_progress<R, W, F>(
+    input: R,
+    output: W,
+    opts: &Options,
+    mut on_progress: F,
+) -> Result<Report, Error>
+where
+    R: Read + Seek,
+    W: Write + Seek,
+    F: FnMut(Progress<'_>),
+{
     let mut archive = ZipArchive::new(input).map_err(|e| Error::InvalidZip(Box::new(e)))?;
     let mut writer = ZipWriter::new(output);
 
@@ -143,13 +173,19 @@ where
         .collect();
 
     let mut report = Report::default();
-    for i in 0..archive.len() {
+    let total = archive.len();
+    for i in 0..total {
         // `by_index_raw` borrows `archive` mutably: one entry at a time.
         // `into_owned` copies the name so the borrow ends here.
         let (name, size) = {
             let entry = archive.by_index_raw(i).map_err(from_zip)?;
             (entry.name().map_err(from_zip)?.into_owned(), entry.size())
         };
+        on_progress(Progress {
+            done: i,
+            total,
+            entry: &name,
+        });
 
         if name.ends_with('/') {
             if kept_files.iter().any(|f| f.starts_with(name.as_str())) {
@@ -350,6 +386,25 @@ mod tests {
             prop_assert!(!String::from_utf8_lossy(opf).contains("f.ttf"));
             prop_assert_eq!(report.fonts_removed, usize::from(font.is_some()));
         }
+    }
+
+    #[test]
+    fn reports_progress_for_every_entry() {
+        let input = build_epub(&[vec!["a".into()], vec!["b".into()]], None).unwrap();
+        let mut seen = Vec::new();
+        let mut output = Cursor::new(Vec::new());
+        optimize_with_progress(Cursor::new(&input), &mut output, &Options::default(), |p| {
+            seen.push((p.done, p.total, p.entry.to_owned()));
+        })
+        .unwrap();
+
+        let names: Vec<String> = read_all(&input).into_iter().map(|(n, _)| n).collect();
+        let expected: Vec<_> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i, names.len(), n.clone()))
+            .collect();
+        assert_eq!(seen, expected);
     }
 
     #[test]
