@@ -70,7 +70,7 @@ pub struct Report {
     pub images_kept: usize,
     /// Size of all images before, in bytes (compressed, as stored in the EPUB).
     pub image_bytes_before: u64,
-    /// Size of all images after, in bytes.
+    /// Size of all images after, in bytes (as stored in the EPUB).
     pub image_bytes_after: u64,
     /// Problems that did not stop the book, e.g. an image that failed to
     /// decode and was copied unchanged. One message per problem.
@@ -177,9 +177,14 @@ where
     for i in 0..total {
         // `by_index_raw` borrows `archive` mutably: one entry at a time.
         // `into_owned` copies the name so the borrow ends here.
+        // Sizes in the report are as stored in the EPUB (compressed), so they
+        // add up with the file size on disk.
         let (name, size) = {
             let entry = archive.by_index_raw(i).map_err(from_zip)?;
-            (entry.name().map_err(from_zip)?.into_owned(), entry.size())
+            (
+                entry.name().map_err(from_zip)?.into_owned(),
+                entry.compressed_size(),
+            )
         };
         on_progress(Progress {
             done: i,
@@ -405,6 +410,26 @@ mod tests {
             .map(|(i, n)| (i, names.len(), n.clone()))
             .collect();
         assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn sizes_are_as_stored_in_the_epub() {
+        // A deflated font that compresses well: stored size << real size.
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("f.ttf", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&[0u8; 10_000]).unwrap();
+        let input = zip.finish().unwrap().into_inner();
+        let stored = ZipArchive::new(Cursor::new(&input))
+            .unwrap()
+            .by_index_raw(0)
+            .unwrap()
+            .compressed_size();
+
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
+        assert!(stored < 10_000);
+        assert_eq!(report.font_bytes, stored);
     }
 
     #[test]
