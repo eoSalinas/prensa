@@ -74,8 +74,8 @@ prensa book.epub book-optimized.epub
 ```
 
 ```text
-✓ Fonts    13 removed (0.67 MB)
-✓ Images   187 optimized, 1 kept (15.45 MB → 2.28 MB)
+✓ Fonts    13 removed (0.38 MB)
+✓ Images   187 optimized, 1 kept (13.21 MB → 2.28 MB)
 ✓ Wrote book-optimized.epub  13.99 MB → 2.68 MB (-81%)
 ```
 
