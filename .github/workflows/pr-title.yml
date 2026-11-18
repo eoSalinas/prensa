@@ -1,0 +1,23 @@
+name: PR title
+
+# PRs are squash merged, so the title becomes the commit on main.
+# It must follow Conventional Commits, e.g. `feat(cli): add --keep-fonts`.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Lowercase subject, as in `fix: report sizes as stored in the EPUB`.
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            The subject "{subject}" in "{title}" must start with a lowercase letter.
