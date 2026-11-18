@@ -25,8 +25,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `optimize` works on any `Read + Seek` input and `Write + Seek` output, never
 prints and returns a `Report`. Use `optimize_with_progress` to drive a
 progress bar.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.

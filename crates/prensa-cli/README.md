@@ -22,8 +22,3 @@ Defaults are tuned on an Xteink X4 Pro running the CrossPoint firmware. Run
 `prensa --help` for options, and see the
 [repository](https://github.com/eoSalinas/prensa) for before/after photos and
 limitations.
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
