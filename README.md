@@ -61,7 +61,14 @@ Each book takes about a second or less to process, a few seconds for Pro Git.
 
 ## Install
 
-Requires a Rust toolchain.
+Requires a Rust toolchain (1.89 or newer).
+
+```sh
+cargo install prensa-cli
+```
+
+This installs the `prensa` command. To build the latest unreleased version
+from the repository instead:
 
 ```sh
 cargo install --git https://github.com/eoSalinas/prensa prensa-cli
@@ -104,7 +111,7 @@ it. `optimize` works on any `Read + Seek` input and `Write + Seek` output
 
 ```toml
 [dependencies]
-prensa = { git = "https://github.com/eoSalinas/prensa" }
+prensa = "0.1"
 ```
 
 ```rust
