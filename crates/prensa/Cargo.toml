@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 keywords.workspace = true
-categories = ["multimedia::images", "text-processing"]
+categories = ["multimedia::images"]
 readme = "README.md"
 
 [dependencies]
