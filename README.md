@@ -61,7 +61,7 @@ Each book takes about a second or less to process, a few seconds for Pro Git.
 
 ## Install
 
-Requires a Rust toolchain (1.89 or newer).
+Requires a Rust toolchain (1.88 or newer).
 
 ```sh
 cargo install prensa-cli
