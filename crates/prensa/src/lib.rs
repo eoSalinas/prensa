@@ -138,9 +138,8 @@ where
 /// Like [`optimize`], calling `on_progress` before each entry is processed.
 ///
 /// On success it is called exactly once per entry (directories included), in
-/// archive order, with `done` equal to
-/// the entry's index. Nothing is called after the last entry; treat the return
-/// of this function as completion.
+/// archive order, with `done` equal to the entry's index. Nothing is called
+/// after the last entry; treat the return of this function as completion.
 ///
 /// The library never prints; front ends use this to draw a progress bar.
 /// Images take most of the time, so progress is not linear in entries.
