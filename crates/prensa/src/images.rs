@@ -156,10 +156,18 @@ mod tests {
 
     #[test]
     fn never_upscales() {
-        let out = optimize(Kind::Jpeg, &colorful_jpeg(100, 50), &Options::default()).unwrap();
-        if let Some(out) = out {
-            assert_eq!(decode(&out).width(), 100);
-        }
+        // Tested below `optimize`, which may keep a small image untouched and
+        // then has no output to check.
+        let small = decode(&colorful_jpeg(100, 50));
+        let out = to_screen_gray(&small, &Options::default());
+        assert_eq!(out.dimensions(), (100, 50));
+    }
+
+    #[test]
+    fn fits_a_tall_image_by_height() {
+        let tall = decode(&colorful_jpeg(500, 2000));
+        let out = to_screen_gray(&tall, &Options::default());
+        assert_eq!(out.dimensions(), (183, 733));
     }
 
     #[test]
