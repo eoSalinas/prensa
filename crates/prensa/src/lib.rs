@@ -73,8 +73,25 @@ pub struct Report {
     /// Size of all images after, in bytes (as stored in the EPUB).
     pub image_bytes_after: u64,
     /// Problems that did not stop the book, e.g. an image that failed to
-    /// decode and was copied unchanged. One message per problem.
-    pub warnings: Vec<String>,
+    /// decode and was copied unchanged. One per problem.
+    pub warnings: Vec<Warning>,
+}
+
+/// A problem that did not stop the book. `Display` gives `entry: message`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Warning {
+    /// Path of the entry inside the EPUB.
+    pub entry: String,
+    /// What went wrong and what prensa did about it, e.g. "failed to decode;
+    /// copied unchanged".
+    pub message: String,
+}
+
+impl std::fmt::Display for Warning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.entry, self.message)
+    }
 }
 
 /// Where [`optimize_with_progress`] is in the book.
@@ -257,9 +274,10 @@ where
                     // An image that fails to decode does not fail the book: it stays as it was.
                     result => {
                         match result {
-                            Err(e) => report
-                                .warnings
-                                .push(format!("{name}: {e:#}; copied unchanged")),
+                            Err(e) => report.warnings.push(Warning {
+                                entry: name.clone(),
+                                message: format!("{e:#}; copied unchanged"),
+                            }),
                             Ok(_) => report.images_kept += 1,
                         }
                         report.image_bytes_after += size;
@@ -437,6 +455,24 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         let err = optimize(Cursor::new(b"not a zip"), &mut output, &Options::default());
         assert!(matches!(err, Err(Error::InvalidZip(_))));
+    }
+
+    #[test]
+    fn undecodable_image_is_a_warning_naming_the_entry() {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("OEBPS/a.png", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"not a png").unwrap();
+        let input = zip.finish().unwrap().into_inner();
+
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let [warning] = report.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", report.warnings);
+        };
+        assert_eq!(warning.entry, "OEBPS/a.png");
+        assert!(warning.message.ends_with("; copied unchanged"), "{warning}");
+        assert!(warning.to_string().starts_with("OEBPS/a.png: "));
     }
 
     #[test]
