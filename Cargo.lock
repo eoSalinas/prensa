@@ -1014,6 +1014,7 @@ dependencies = [
  "indicatif",
  "prensa",
  "tempfile",
+ "zip",
 ]
 
 [[package]]
