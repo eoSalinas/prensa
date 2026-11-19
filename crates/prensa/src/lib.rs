@@ -21,6 +21,7 @@ mod images;
 pub use error::{Error, Source};
 
 use error::from_zip;
+use fonts::Fonts;
 use std::io::{Read, Seek, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -91,17 +92,22 @@ pub struct Progress<'a> {
 
 /// What to do with each zip entry.
 enum Action {
+    /// Already written (`mimetype`, written first).
     Skip,
+    /// Dropped and counted in the report.
+    RemoveFont,
     CopyRaw,
     /// `Ok(None)` means the entry is dropped from the output.
-    Rewrite(fn(&str) -> anyhow::Result<Option<String>>),
+    Rewrite(fn(&str, &Fonts) -> anyhow::Result<Option<String>>),
     Image(images::Kind),
 }
 
-fn decide(name: &str) -> Action {
+fn decide(name: &str, fonts: &Fonts) -> Action {
     let lower = name.to_ascii_lowercase();
-    if name == "mimetype" || fonts::is_font(name) {
+    if name == "mimetype" {
         Action::Skip
+    } else if fonts.contains(name) {
+        Action::RemoveFont
     } else if lower.ends_with(".css") {
         Action::Rewrite(fonts::strip_font_faces)
     } else if lower.ends_with(".opf") {
@@ -166,9 +172,35 @@ where
                 .into_owned())
         })
         .collect::<Result<Vec<String>, Error>>()?;
+
+    // Fonts declared in the manifest, so a font without a font extension is
+    // removed together with its manifest item and `encryption.xml` entry.
+    let mut fonts = Fonts::default();
+    for (i, name) in names.iter().enumerate() {
+        if !name.to_ascii_lowercase().ends_with(".opf") {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        archive
+            .by_index(i)
+            .map_err(from_zip)?
+            .read_to_end(&mut bytes)?;
+        // A non-UTF-8 OPF is not rewritten either; it is handled in the main pass.
+        if let Ok(opf) = std::str::from_utf8(&bytes) {
+            fonts
+                .add_manifest(opf, name)
+                .map_err(|e| Error::Malformed {
+                    entry: name.clone(),
+                    source: e.into(),
+                })?;
+        }
+    }
+
     let kept_files: Vec<&str> = names
         .iter()
-        .filter(|n| !n.ends_with('/') && !matches!(decide(n), Action::Skip))
+        .filter(|n| {
+            !n.ends_with('/') && !matches!(decide(n, &fonts), Action::Skip | Action::RemoveFont)
+        })
         .map(String::as_str)
         .collect();
 
@@ -201,12 +233,11 @@ where
             continue;
         }
 
-        match decide(&name) {
-            Action::Skip => {
-                if fonts::is_font(&name) {
-                    report.fonts_removed += 1;
-                    report.font_bytes += size;
-                }
+        match decide(&name, &fonts) {
+            Action::Skip => {}
+            Action::RemoveFont => {
+                report.fonts_removed += 1;
+                report.font_bytes += size;
             }
             // Copy the compressed bytes as-is, without decompressing and recompressing.
             Action::CopyRaw => writer
@@ -222,7 +253,7 @@ where
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
                         // (font removed but still listed in the manifest).
-                        let result = transform(&text).map_err(|e| Error::Malformed {
+                        let result = transform(&text, &fonts).map_err(|e| Error::Malformed {
                             entry: name.clone(),
                             source: e.into(),
                         })?;
@@ -437,6 +468,37 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         let err = optimize(Cursor::new(b"not a zip"), &mut output, &Options::default());
         assert!(matches!(err, Err(Error::InvalidZip(_))));
+    }
+
+    #[test]
+    fn removes_fonts_declared_only_by_media_type() {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let files: [(&str, &[u8]); 4] = [
+            (
+                "OEBPS/content.opf",
+                br#"<package><manifest><item href="fonts/f0001" id="f" media-type="font/ttf"/><item href="ch.xhtml" id="c" media-type="application/xhtml+xml"/></manifest></package>"#,
+            ),
+            ("OEBPS/fonts/f0001", b"font bytes"),
+            ("OEBPS/ch.xhtml", b"<html/>"),
+            (
+                "META-INF/encryption.xml",
+                br#"<encryption><EncryptedData><CipherReference URI="OEBPS/fonts/f0001"/></EncryptedData></encryption>"#,
+            ),
+        ];
+        for (name, bytes) in files {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let input = zip.finish().unwrap().into_inner();
+
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let names: Vec<String> = read_all(output.get_ref())
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, ["mimetype", "OEBPS/content.opf", "OEBPS/ch.xhtml"]);
+        assert_eq!(report.fonts_removed, 1);
     }
 
     #[test]

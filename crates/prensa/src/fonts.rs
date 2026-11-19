@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer, XmlVersion};
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 const FONT_EXTS: [&str; 4] = [".ttf", ".otf", ".woff", ".woff2"];
@@ -30,7 +31,93 @@ pub fn is_font(name: &str) -> bool {
     FONT_EXTS.iter().any(|ext| lower.ends_with(ext))
 }
 
-pub fn strip_font_faces(css: &str) -> Result<Option<String>> {
+/// The fonts of a book: files with a font extension, plus files the OPF
+/// manifest declares as fonts by `media-type` alone (`href="f0001"
+/// media-type="font/ttf"`). Every place that removes fonts asks this, so the
+/// files, the manifest and `encryption.xml` stay consistent.
+#[derive(Debug, Default)]
+pub struct Fonts {
+    /// Zip paths of manifest font items.
+    declared: HashSet<String>,
+}
+
+impl Fonts {
+    /// Add the font items of the OPF at `opf_path` (a zip path).
+    pub fn add_manifest(&mut self, opf: &str, opf_path: &str) -> Result<()> {
+        let base = opf_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let mut reader = Reader::from_str(opf);
+        loop {
+            match reader.read_event()? {
+                Event::Eof => return Ok(()),
+                Event::Start(e) | Event::Empty(e) if is_font_item(&e)? => {
+                    if let Some(href) = e.try_get_attribute("href")? {
+                        let href = href.normalized_value(XmlVersion::Implicit1_0)?;
+                        if let Some(path) = resolve(base, &href) {
+                            self.declared.insert(path);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Is the entry at this zip path a font?
+    pub fn contains(&self, path: &str) -> bool {
+        is_font(path) || self.declared.contains(path)
+    }
+}
+
+/// Zip path of a manifest `href`, relative to the OPF directory `base`.
+/// `None` for remote resources.
+fn resolve(base: &str, href: &str) -> Option<String> {
+    let href = href.split(['#', '?']).next().unwrap_or_default();
+    if href.contains("://") {
+        return None;
+    }
+    let href = percent_decode(href);
+    let (start, href) = match href.strip_prefix('/') {
+        Some(rest) => ("", rest),
+        None => (base, href.as_str()),
+    };
+    let mut parts: Vec<&str> = start.split('/').filter(|p| !p.is_empty()).collect();
+    for part in href.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Decode `%XX` escapes. Invalid escapes or non-UTF-8 results are kept as is.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+}
+
+pub fn strip_font_faces(css: &str, _fonts: &Fonts) -> Result<Option<String>> {
     Ok(Some(FONT_FACE.replace_all(css, "").into_owned()))
 }
 
@@ -55,7 +142,7 @@ fn is_font_item(e: &BytesStart) -> Result<bool> {
 }
 
 /// Remove font items from the manifest. Everything else in the OPF passes through untouched.
-pub fn remove_manifest_items(opf: &str) -> Result<Option<String>> {
+pub fn remove_manifest_items(opf: &str, _fonts: &Fonts) -> Result<Option<String>> {
     let mut reader = Reader::from_str(opf);
     let mut writer = Writer::new(Vec::new());
     loop {
@@ -75,7 +162,7 @@ pub fn remove_manifest_items(opf: &str) -> Result<Option<String>> {
 
 /// Remove `<EncryptedData>` blocks that point to fonts.
 /// Returns `None` when no block is left, meaning the file can be dropped.
-pub fn clean_encryption(xml: &str) -> Result<Option<String>> {
+pub fn clean_encryption(xml: &str, fonts: &Fonts) -> Result<Option<String>> {
     let mut reader = Reader::from_str(xml);
     let mut writer = Writer::new(Vec::new());
     let mut kept = 0;
@@ -93,8 +180,11 @@ pub fn clean_encryption(xml: &str) -> Result<Option<String>> {
                             if e.local_name().as_ref() == "CipherReference" =>
                         {
                             if let Some(uri) = e.try_get_attribute("URI")? {
+                                // URIs here are relative to the container root,
+                                // i.e. zip paths.
+                                let uri = uri.normalized_value(XmlVersion::Implicit1_0)?;
                                 points_to_font |=
-                                    is_font(&uri.normalized_value(XmlVersion::Implicit1_0)?);
+                                    resolve("", &uri).is_some_and(|path| fonts.contains(&path));
                             }
                         }
                         Event::Eof => bail!("encryption.xml: unclosed <EncryptedData>"),
@@ -137,7 +227,7 @@ mod tests {
     #[test]
     fn strips_font_face_and_keeps_the_rest() {
         let css = "body { margin: 0 }\n@font-face {\n  font-family: \"Charis\";\n  src: url(x.ttf);\n}\np { color: red }";
-        let out = strip_font_faces(css).unwrap().unwrap();
+        let out = strip_font_faces(css, &Fonts::default()).unwrap().unwrap();
         assert_eq!(out, "body { margin: 0 }\n\np { color: red }");
     }
 
@@ -149,7 +239,9 @@ mod tests {
 <item href="no-extension" id="g" media-type="font/ttf"></item>
 <item href="img.png" id="i" media-type="image/png"/>
 </manifest></package>"#;
-        let out = remove_manifest_items(opf).unwrap().unwrap();
+        let out = remove_manifest_items(opf, &Fonts::default())
+            .unwrap()
+            .unwrap();
         assert!(!out.contains("Font.otf") && !out.contains("no-extension"));
         assert!(out.contains(r#"<item href="a.css" id="c" media-type="text/css"/>"#));
         assert!(out.contains(r#"<item href="img.png" id="i" media-type="image/png"/>"#));
@@ -159,20 +251,25 @@ mod tests {
     #[test]
     fn opf_without_fonts_is_unchanged() {
         let opf = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<package version=\"3.0\">\n  <metadata><dc:title>A &amp; B</dc:title></metadata>\n  <manifest><item href=\"a.xhtml\" id=\"a\" media-type=\"application/xhtml+xml\"/></manifest>\n</package>";
-        assert_eq!(remove_manifest_items(opf).unwrap().unwrap(), opf);
+        assert_eq!(
+            remove_manifest_items(opf, &Fonts::default())
+                .unwrap()
+                .unwrap(),
+            opf
+        );
     }
 
     #[test]
     fn encryption_with_only_fonts_is_dropped() {
         let xml = r#"<encryption xmlns:enc="x"><enc:EncryptedData><enc:CipherData>
 <enc:CipherReference URI="fonts/00001.ttf"/></enc:CipherData></enc:EncryptedData></encryption>"#;
-        assert_eq!(clean_encryption(xml).unwrap(), None);
+        assert_eq!(clean_encryption(xml, &Fonts::default()).unwrap(), None);
     }
 
     #[test]
     fn encryption_with_other_entries_is_kept() {
         let xml = r#"<encryption><EncryptedData><CipherReference URI="a.ttf"/></EncryptedData><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#;
-        let out = clean_encryption(xml)
+        let out = clean_encryption(xml, &Fonts::default())
             .unwrap()
             .expect("still has encrypted content");
         assert_eq!(
@@ -183,6 +280,51 @@ mod tests {
 
     #[test]
     fn broken_xml_is_an_error() {
-        assert!(remove_manifest_items("<package><manifest></package>").is_err());
+        assert!(remove_manifest_items("<package><manifest></package>", &Fonts::default()).is_err());
+    }
+
+    #[test]
+    fn manifest_declares_fonts_without_extension() {
+        let opf = r#"<package><manifest>
+<item href="fonts/f0001" id="f" media-type="font/ttf"/>
+<item href="../Misc/My%20Font.otf" id="g" media-type="application/vnd.ms-opentype"></item>
+<item href="ch01.xhtml" id="c" media-type="application/xhtml+xml"/>
+</manifest></package>"#;
+        let mut fonts = Fonts::default();
+        fonts.add_manifest(opf, "OEBPS/content.opf").unwrap();
+        assert!(fonts.contains("OEBPS/fonts/f0001"));
+        assert!(fonts.contains("Misc/My Font.otf"));
+        assert!(!fonts.contains("OEBPS/ch01.xhtml"));
+        assert!(
+            !fonts.contains("fonts/f0001"),
+            "resolved against the OPF directory"
+        );
+    }
+
+    #[test]
+    fn encryption_entry_for_declared_font_is_dropped() {
+        let mut fonts = Fonts::default();
+        fonts
+            .add_manifest(
+                r#"<package><manifest><item href="f0001" media-type="font/otf"/></manifest></package>"#,
+                "OEBPS/content.opf",
+            )
+            .unwrap();
+        let xml = r#"<encryption><EncryptedData><CipherReference URI="OEBPS/f0001"/></EncryptedData></encryption>"#;
+        assert_eq!(clean_encryption(xml, &fonts).unwrap(), None);
+    }
+
+    #[test]
+    fn resolves_hrefs() {
+        assert_eq!(resolve("OEBPS", "a.ttf").as_deref(), Some("OEBPS/a.ttf"));
+        assert_eq!(
+            resolve("OEBPS/text", "../fonts/a.ttf").as_deref(),
+            Some("OEBPS/fonts/a.ttf")
+        );
+        assert_eq!(resolve("", "./a%20b.ttf#x").as_deref(), Some("a b.ttf"));
+        assert_eq!(resolve("OEBPS", "/root.ttf").as_deref(), Some("root.ttf"));
+        assert_eq!(resolve("OEBPS", "https://example.com/a.ttf"), None);
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
     }
 }
