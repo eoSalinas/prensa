@@ -7,6 +7,9 @@
 //! - formats CrossPoint cannot decode (WebP, BMP) become JPEG or PNG, and GIF
 //!   becomes PNG when that is smaller or the image must shrink. The caller
 //!   renames the file, since the reader picks a decoder from the extension;
+//! - optionally, wide images that would be shrunk to less than a third are
+//!   turned 90° when that shows them at least 30% larger ([`rotation_for`]);
+//!   the caller drops their `width`/`height` in chapters;
 //! - never makes things worse: if the result is larger and the image did not
 //!   *need* to change, the original is kept.
 
@@ -16,7 +19,7 @@ use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
 use image::imageops::FilterType;
 use image::{DynamicImage, ExtendedColorType, GrayImage, ImageEncoder, ImageFormat, Luma};
 
-use crate::Options;
+use crate::{Options, Rotation};
 
 /// Format of an image entry, from its extension.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,8 +154,44 @@ pub(crate) fn is_progressive_jpeg(data: &[u8]) -> bool {
     false
 }
 
+/// Width and height from the image header, without decoding the pixels.
+/// `None` if the header cannot be read; decoding will report why.
+pub(crate) fn dimensions(kind: Kind, data: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::with_format(std::io::Cursor::new(data), kind.image_format())
+        .into_dimensions()
+        .ok()
+}
+
+/// Only images shrunk below this scale upright are turned: below a third,
+/// small text in a diagram is no longer readable. Each turned image makes the
+/// reader turn the device, so images that are merely reduced stay upright
+/// (in Mastering Bitcoin, 600 px diagrams fitted to 440 px read fine).
+const MAX_UPRIGHT_SCALE: f64 = 1.0 / 3.0;
+
+/// Turning an image must show it at least this much larger to be worth
+/// making the reader turn the device.
+const MIN_ROTATION_GAIN: f64 = 1.3;
+
+/// Direction to turn an image of `width` x `height`, or `None` to leave it.
+///
+/// Only images shrunk below [`MAX_UPRIGHT_SCALE`] upright are turned, and only
+/// when they are then shown at least [`MIN_ROTATION_GAIN`] times larger. With
+/// the 440x733 box, that is a landscape image wider than 1320 px with an
+/// aspect ratio of about 1.3 or more; the gain is capped at 733/440 = 1.67.
+pub(crate) fn rotation_for(width: u32, height: u32, opts: &Options) -> Option<Rotation> {
+    let rotation = opts.rotate()?;
+    let (box_w, box_h) = (f64::from(opts.max_width()), f64::from(opts.max_height()));
+    let (w, h) = (f64::from(width), f64::from(height));
+    let upright = (box_w / w).min(box_h / h).min(1.0);
+    if upright >= MAX_UPRIGHT_SCALE {
+        return None;
+    }
+    let turned = (box_w / h).min(box_h / w).min(1.0);
+    (turned >= upright * MIN_ROTATION_GAIN).then_some(rotation)
+}
+
 /// Grayscale with alpha flattened onto white, downscaled to fit the box.
-fn to_screen_gray(img: &DynamicImage, opts: &Options) -> GrayImage {
+fn to_screen_gray(img: &DynamicImage, rotation: Option<Rotation>, opts: &Options) -> GrayImage {
     let gray = if img.color().has_alpha() {
         let rgba = img.to_rgba8();
         GrayImage::from_fn(img.width(), img.height(), |x, y| {
@@ -163,6 +202,12 @@ fn to_screen_gray(img: &DynamicImage, opts: &Options) -> GrayImage {
         })
     } else {
         img.to_luma8()
+    };
+
+    let gray = match rotation {
+        None => gray,
+        Some(Rotation::Clockwise) => image::imageops::rotate90(&gray),
+        Some(Rotation::Counterclockwise) => image::imageops::rotate270(&gray),
     };
 
     let resized = gray.width() > opts.max_width() || gray.height() > opts.max_height();
@@ -206,6 +251,8 @@ fn encode(format: Format, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
 pub(crate) struct Optimized {
     pub(crate) bytes: Vec<u8>,
     pub(crate) format: Format,
+    /// Turned 90°: references to it must lose sizes set for the original.
+    pub(crate) rotated: bool,
 }
 
 /// Returns `Ok(None)` when the original should be kept as-is.
@@ -216,13 +263,18 @@ pub(crate) fn optimize(kind: Kind, data: &[u8], opts: &Options) -> Result<Option
     // Cases where the change is required even if the file grows.
     let too_big = img.width() > opts.max_width() || img.height() > opts.max_height();
     let progressive = kind == Kind::Jpeg && is_progressive_jpeg(data);
-    let must_change = too_big || progressive || !kind.device_decodes();
+    let rotation = rotation_for(img.width(), img.height(), opts);
+    let must_change = too_big || progressive || !kind.device_decodes() || rotation.is_some();
 
-    let bytes = encode(format, &to_screen_gray(&img, opts), opts)?;
+    let bytes = encode(format, &to_screen_gray(&img, rotation, opts), opts)?;
     if bytes.len() >= data.len() && !must_change {
         return Ok(None);
     }
-    Ok(Some(Optimized { bytes, format }))
+    Ok(Some(Optimized {
+        bytes,
+        format,
+        rotated: rotation.is_some(),
+    }))
 }
 
 #[cfg(test)]
@@ -246,9 +298,13 @@ mod tests {
         out
     }
 
+    fn no_rotate() -> Options {
+        Options::builder().no_rotate().build().unwrap()
+    }
+
     #[test]
     fn downscales_to_fit_keeping_aspect_ratio() {
-        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Options::default())
+        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &no_rotate())
             .unwrap()
             .unwrap();
         assert_eq!(out.format, Format::Jpeg);
@@ -260,18 +316,88 @@ mod tests {
     }
 
     #[test]
+    fn turns_wide_images_that_gain_enough() {
+        let opts = Options::builder()
+            .rotate(Rotation::Clockwise)
+            .build()
+            .unwrap(); // 440x733
+        let cw = Some(Rotation::Clockwise);
+        // 2391x1000 (Pro Git, Figure 10): 18% upright, 1.67x larger turned.
+        assert_eq!(rotation_for(2391, 1000, &opts), cw);
+        // Shrunk to 44%: still readable upright.
+        assert_eq!(rotation_for(1000, 500, &opts), None);
+        // 600 px wide: reduced to 73%, stays upright.
+        assert_eq!(rotation_for(600, 331, &opts), None);
+        // Fits the box.
+        assert_eq!(rotation_for(440, 200, &opts), None);
+        // Portrait and square: turning makes them smaller or no larger.
+        assert_eq!(rotation_for(1000, 4000, &opts), None);
+        assert_eq!(rotation_for(3000, 3000, &opts), None);
+        // Shrunk to 31% but only 1.2:1: gains 1.2x, below the threshold.
+        assert_eq!(rotation_for(1400, 1170, &opts), None);
+        // Off by default.
+        assert_eq!(rotation_for(2391, 1000, &Options::default()), None);
+    }
+
+    fn rotate_cw() -> Options {
+        Options::builder()
+            .rotate(Rotation::Clockwise)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn turned_image_fills_the_height() {
+        let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &rotate_cw())
+            .unwrap()
+            .unwrap();
+        assert!(out.rotated);
+        let img = decode(&out.bytes);
+        // 1000x2000 after turning, fitted to 440x733.
+        assert_eq!((img.width(), img.height()), (367, 733));
+        // Off by default: fitted upright.
+        let upright = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Options::default())
+            .unwrap()
+            .unwrap();
+        assert!(!upright.rotated);
+    }
+
+    #[test]
+    fn turns_in_the_chosen_direction() {
+        // Black left half: clockwise puts it on top, counterclockwise at the bottom.
+        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(2000, 1000, |x, _| {
+            if x < 1000 {
+                Rgb([0, 0, 0])
+            } else {
+                Rgb([255, 255, 255])
+            }
+        }));
+        let png = encoded(img, ImageFormat::Png);
+        let top_and_bottom = |rotation| {
+            let opts = Options::builder().rotate(rotation).build().unwrap();
+            let out = decode(&optimize(Kind::Png, &png, &opts).unwrap().unwrap().bytes).to_luma8();
+            (
+                out.get_pixel(out.width() / 2, 5).0[0],
+                out.get_pixel(out.width() / 2, out.height() - 5).0[0],
+            )
+        };
+        assert_eq!(top_and_bottom(Rotation::Clockwise), (0, 255));
+        assert_eq!(top_and_bottom(Rotation::Counterclockwise), (255, 0));
+    }
+
+    #[test]
     fn never_upscales() {
         // Tested below `optimize`, which may keep a small image untouched and
         // then has no output to check.
         let small = decode(&colorful_jpeg(100, 50));
-        let out = to_screen_gray(&small, &Options::default());
+        let out = to_screen_gray(&small, None, &Options::default());
         assert_eq!(out.dimensions(), (100, 50));
     }
 
     #[test]
     fn fits_a_tall_image_by_height() {
         let tall = decode(&colorful_jpeg(500, 2000));
-        let out = to_screen_gray(&tall, &Options::default());
+        let out = to_screen_gray(&tall, None, &Options::default());
         assert_eq!(out.dimensions(), (183, 733));
     }
 
@@ -373,7 +499,7 @@ mod tests {
         // The `image` crate only encodes lossless WebP.
         let webp = encoded(colorful(600, 300), ImageFormat::WebP);
         assert!(is_lossless_webp(&webp));
-        let out = optimize(Kind::Webp, &webp, &Options::default())
+        let out = optimize(Kind::Webp, &webp, &no_rotate())
             .unwrap()
             .expect("converted");
         assert_eq!(out.format, Format::Png);
@@ -383,7 +509,7 @@ mod tests {
     #[test]
     fn large_gif_becomes_a_smaller_png() {
         let gif = encoded(colorful(1000, 500), ImageFormat::Gif);
-        let out = optimize(Kind::Gif, &gif, &Options::default())
+        let out = optimize(Kind::Gif, &gif, &no_rotate())
             .unwrap()
             .expect("too big for the screen");
         assert_eq!(out.format, Format::Png);

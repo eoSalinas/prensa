@@ -100,6 +100,7 @@ Then copy `book-optimized.epub` to the device.
 | `--max-height <PX>` | from `--device` | Maximum image height |
 | `--quality <1-100>` | `92` | JPEG quality |
 | `--sharpen <SIGMA>` | `0.8` | Unsharp mask after downscaling; `0` disables it |
+| `--rotate <off\|cw\|ccw>` | `off` | Turn wide diagrams 90° to fill the screen's height (see below) |
 
 The defaults won a side-by-side comparison on the device. They favor
 legibility over the smallest possible file.
@@ -154,6 +155,11 @@ it if you need atomic writes.
   upscales), converts it to grayscale (flattening transparency onto white),
   and writes JPEGs as baseline. If the result is not smaller and the image did
   not need to change, the original is kept.
+- **Wide diagrams** (`--rotate cw` or `ccw`, off by default): an image that
+  would be shrunk to less than a third of its size to fit the width is turned
+  90° when that shows it at least 30% larger (up to 1.67× on 440×733), and its
+  `width`/`height` in the chapter are dropped. You turn the device to read it.
+  On Pro Git, 68 of 188 images are turned; on Mastering Bitcoin, none.
 - **Formats:** CrossPoint shows only JPEG, PNG and GIF, and picks the decoder
   from the file extension. WebP and BMP images are converted (lossy WebP to
   JPEG; lossless WebP and BMP to PNG) and renamed, and every reference to them
@@ -177,7 +183,8 @@ it if you need atomic writes.
   device yet. Readers that use embedded fonts
   (e.g. KOReader) will fall back to their own fonts after `prensa` removes them.
 - Very wide diagrams become visible but their smallest text can still be hard
-  to read at 440 px.
+  to read at 440 px. `--rotate cw` helps up to 1.67×; panoramic diagrams stay
+  small.
 - Thin light-gray lines can look dashed after the device's 4-level dithering.
 
 ## Credits

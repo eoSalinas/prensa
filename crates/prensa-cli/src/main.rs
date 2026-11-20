@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use console::{Term, style};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use prensa::{Device, Options, Progress, Report};
+use prensa::{Device, Options, Progress, Report, Rotation};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -35,6 +35,21 @@ struct Cli {
     /// Sharpening after downscaling (unsharp mask sigma; 0 disables)
     #[arg(long, default_value_t = Options::default().sharpen().unwrap_or(0.0))]
     sharpen: f32,
+    /// Turn wide diagrams 90° to fill the screen's height (only those shrunk
+    /// to less than a third upright)
+    #[arg(long, value_enum, default_value_t = RotateArg::Off)]
+    rotate: RotateArg,
+}
+
+/// `--rotate` values.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RotateArg {
+    /// Clockwise: read with the device turned counterclockwise
+    Cw,
+    /// Counterclockwise: read with the device turned clockwise
+    Ccw,
+    /// Never turn images
+    Off,
 }
 
 /// `--device` values. The library's [`Device`] does not depend on clap.
@@ -79,6 +94,11 @@ fn main() -> Result<()> {
         builder.no_sharpen()
     } else {
         builder.sharpen(cli.sharpen)
+    };
+    let builder = match cli.rotate {
+        RotateArg::Cw => builder.rotate(Rotation::Clockwise),
+        RotateArg::Ccw => builder.rotate(Rotation::Counterclockwise),
+        RotateArg::Off => builder.no_rotate(),
     };
     let opts = builder.build()?;
 
@@ -197,9 +217,18 @@ fn print_summary(output: &Path, sizes: &Sizes) {
     let images = if total_images == 0 {
         style("none".to_string()).dim().to_string()
     } else {
-        let converted = match r.images_converted {
-            0 => String::new(),
-            n => format!(" ({n} converted to JPEG/PNG)"),
+        let details: Vec<String> = [
+            (r.images_converted, "converted to JPEG/PNG"),
+            (r.images_rotated, "turned"),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+        let converted = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", details.join(", "))
         };
         format!(
             "{} optimized{converted}, {} kept ({} → {})",

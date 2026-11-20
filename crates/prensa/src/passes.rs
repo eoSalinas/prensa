@@ -8,6 +8,7 @@ use crate::fonts::{self, Fonts};
 use crate::images;
 use crate::refs::{self, Renames};
 use anyhow::Result;
+use std::collections::HashSet;
 
 /// What the passes know about the whole book, gathered before any entry is
 /// written.
@@ -17,6 +18,9 @@ pub(crate) struct Book {
     pub(crate) fonts: Fonts,
     /// Images converted to another format, whose references must follow.
     pub(crate) renames: Renames,
+    /// Zip paths (before renaming) of images turned 90°, whose references
+    /// lose the sizes set for the original orientation.
+    pub(crate) rotated: HashSet<String>,
 }
 
 /// What to do with each zip entry.
@@ -96,9 +100,9 @@ pub(crate) fn decide(name: &str, book: &Book) -> Action {
         )
     } else if let Some(kind) = images::kind_of(name) {
         Action::Image(kind)
-    } else if is_document && !book.renames.is_empty() {
+    } else if is_document && !(book.renames.is_empty() && book.rotated.is_empty()) {
         Action::Rewrite(
-            |doc, entry, book| refs::rewrite_document(doc, entry, &book.renames),
+            |doc, entry, book| refs::rewrite_document(doc, entry, &book.renames, &book.rotated),
             Fallback::CopyWithWarning,
         )
     } else {

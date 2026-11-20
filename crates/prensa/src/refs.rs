@@ -6,9 +6,13 @@
 //! every reference to it updated: `src`/`href` attributes in XHTML and SVG,
 //! manifest items in the OPF, `url(...)` in CSS and `style` attributes.
 //!
-//! Edits replace attribute values (and `url(...)` arguments) in place; every
-//! other byte of the document is kept, so the element tree and the text never
-//! change.
+//! References to an image that was turned 90° lose their `width`/`height`
+//! attributes and inline CSS sizes, which were set for the original
+//! orientation.
+//!
+//! Edits replace or remove attributes (and `url(...)` arguments) in place;
+//! every other byte of the document is kept, so the element tree and the text
+//! never change.
 
 use crate::passes::Outcome;
 use anyhow::{Result, bail};
@@ -190,23 +194,60 @@ pub(crate) fn rewrite_css(css: &str, entry: &str, renames: &Renames) -> Result<O
     })
 }
 
-/// Rewrite references to renamed images in an XHTML or SVG document at
+/// Rewrite references to changed images in an XHTML or SVG document at
 /// `entry`: `src`, `href` and `xlink:href` attributes, and `url(...)` in
-/// `style` attributes.
-pub(crate) fn rewrite_document(xhtml: &str, entry: &str, renames: &Renames) -> Result<Outcome> {
+/// `style` attributes, follow renamed images; an element showing a turned
+/// image (zip paths in `rotated`, before renaming) loses its sizes.
+pub(crate) fn rewrite_document(
+    xhtml: &str,
+    entry: &str,
+    renames: &Renames,
+    rotated: &HashSet<String>,
+) -> Result<Outcome> {
     let base = dir_of(entry);
     edit_attributes(xhtml, |_, attrs| {
+        let shows_rotated = attrs.iter().any(|(name, value)| {
+            matches!(name.as_str(), "src" | "href")
+                && resolve(base, value).is_some_and(|path| rotated.contains(&path))
+        });
         let mut edits = Vec::new();
         for (i, (name, value)) in attrs.iter().enumerate() {
-            let new = match name.as_str() {
-                "src" | "href" => renames.new_href(base, value),
-                "style" => renames.rewrite_css_urls(base, value),
+            let edit = match name.as_str() {
+                "src" | "href" => renames.new_href(base, value).map(Edit::Set),
+                "width" | "height" if shows_rotated => Some(Edit::Remove),
+                "style" => {
+                    let css = renames.rewrite_css_urls(base, value);
+                    let current = css.as_deref().unwrap_or(value);
+                    match (shows_rotated.then(|| without_sizes(current)).flatten(), css) {
+                        (Some(stripped), _) if stripped.trim().is_empty() => Some(Edit::Remove),
+                        (Some(stripped), _) => Some(Edit::Set(stripped)),
+                        (None, css) => css.map(Edit::Set),
+                    }
+                }
                 _ => None,
             };
-            edits.extend(new.map(|new| (i, new)));
+            edits.extend(edit.map(|edit| (i, edit)));
         }
         edits
     })
+}
+
+/// `style` attribute text without its `width` and `height` declarations, or
+/// `None` if it has none. `max-width` and the like stay.
+fn without_sizes(style: &str) -> Option<String> {
+    let is_size = |decl: &&str| {
+        let property = decl.split(':').next().unwrap_or_default().trim();
+        property.eq_ignore_ascii_case("width") || property.eq_ignore_ascii_case("height")
+    };
+    let decls: Vec<&str> = style.split(';').collect();
+    if !decls.iter().any(|d| d.contains(':') && is_size(d)) {
+        return None;
+    }
+    let kept: Vec<&str> = decls
+        .into_iter()
+        .filter(|d| !(d.contains(':') && is_size(d)))
+        .collect();
+    Some(kept.join(";"))
 }
 
 /// Point manifest items of renamed images in the OPF at `entry` to the new
@@ -229,38 +270,58 @@ pub(crate) fn rewrite_opf(opf: &str, entry: &str, renames: &Renames) -> Result<O
             .iter()
             .enumerate()
             .filter_map(|(i, (name, _))| match name.as_str() {
-                "href" => Some((i, new_href.clone())),
-                "media-type" => Some((i, media_type.to_owned())),
+                "href" => Some((i, Edit::Set(new_href.clone()))),
+                "media-type" => Some((i, Edit::Set(media_type.to_owned()))),
                 _ => None,
             })
             .collect()
     })
 }
 
-/// Replace attribute values in an XML document, keeping every other byte.
+/// What to do with one attribute.
+#[derive(Debug, PartialEq)]
+enum Edit {
+    /// Replace its value with this unescaped text.
+    Set(String),
+    /// Remove the attribute, with the whitespace before it.
+    Remove,
+}
+
+/// Edit attributes in an XML document, keeping every other byte.
 ///
 /// `edit` is called for each start or empty tag with the element's local name
-/// and its attributes as (local name, unescaped value), and returns the new
-/// unescaped values by attribute index. [`Outcome::Keep`] if nothing changed.
+/// and its attributes as (local name, unescaped value), and returns edits by
+/// attribute index. [`Outcome::Keep`] if nothing changed.
 ///
 /// End tags are not matched against start tags: only attributes are edited,
 /// so HTML-style chapters (`<br>` never closed) are handled too.
 fn edit_attributes(
     xml: &str,
-    mut edit: impl FnMut(&str, &[(String, String)]) -> Vec<(usize, String)>,
+    mut edit: impl FnMut(&str, &[(String, String)]) -> Vec<(usize, Edit)>,
 ) -> Result<Outcome> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().check_end_names = false;
-    // Byte ranges of raw attribute values to replace, in document order.
+    // Byte ranges to replace, in document order.
     let mut splices: Vec<(usize, usize, String)> = Vec::new();
     loop {
         match reader.read_event()? {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => {
                 let (raws, attrs) = attributes(&e)?;
-                for (i, new) in edit(e.local_name().as_ref(), &attrs) {
-                    let (start, end) = span_in(xml, raws[i])?;
-                    splices.push((start, end, quick_xml::escape::escape(new).into_owned()));
+                for (i, edit) in edit(e.local_name().as_ref(), &attrs) {
+                    let raw = &raws[i];
+                    let (start, end) = span_in(xml, raw.value)?;
+                    splices.push(match edit {
+                        Edit::Set(new) => (start, end, quick_xml::escape::escape(new).into_owned()),
+                        Edit::Remove => {
+                            let (key_start, _) = span_in(xml, raw.key)?;
+                            // Back over the whitespace before the name; on to
+                            // the closing quote after the value.
+                            let from = xml[..key_start].trim_end().len();
+                            let to = end + xml[end..].chars().next().map_or(0, char::len_utf8);
+                            (from, to, String::new())
+                        }
+                    });
                 }
             }
             _ => {}
@@ -280,13 +341,19 @@ fn edit_attributes(
     Ok(Outcome::Replace(out))
 }
 
-/// The attributes of a tag: each raw (escaped) value as written in the
-/// document, and (local name, unescaped value) pairs, index for index.
+/// An attribute as written in the document: its name and raw (escaped) value.
+struct RawAttr<'t> {
+    key: &'t str,
+    value: &'t str,
+}
+
+/// The attributes of a tag: each one as written in the document, and
+/// (local name, unescaped value) pairs, index for index.
 ///
 /// An attribute whose value cannot be unescaped (an entity such as `&nbsp;`
 /// with no DTD to define it) is left out: it is never edited, and the rest of
 /// the document still is.
-fn attributes<'t>(tag: &'t BytesStart) -> Result<(Vec<&'t str>, Pairs)> {
+fn attributes<'t>(tag: &'t BytesStart) -> Result<(Vec<RawAttr<'t>>, Pairs)> {
     let mut raws = Vec::new();
     let mut attrs = Vec::new();
     for attr in tag.attributes() {
@@ -296,11 +363,14 @@ fn attributes<'t>(tag: &'t BytesStart) -> Result<(Vec<&'t str>, Pairs)> {
         };
         let value = value.into_owned();
         let name = attr.key.local_name().as_ref().to_owned();
-        // A reader over a `&str` borrows every raw value from it.
+        // A reader over a `&str` borrows every raw name and value from it.
         let Cow::Borrowed(raw) = attr.value else {
             bail!("attribute value is not borrowed from the document");
         };
-        raws.push(raw);
+        raws.push(RawAttr {
+            key: attr.key.0,
+            value: raw,
+        });
         attrs.push((name, value));
     }
     Ok((raws, attrs))
@@ -392,7 +462,8 @@ mod tests {
     fn rewrites_only_the_attribute_values() {
         let r = renames(&["OEBPS/img/a.webp", "OEBPS/img/b.bmp"], "jpg");
         let xhtml = "<?xml version=\"1.0\"?>\n<!-- a.webp -->\n<html><body>\n  <p>See <img  src='../img/a.webp'\n alt=\"a.webp &amp; more\"/> and a.webp.</p>\n  <svg:image xlink:href=\"../img/b.bmp\"/><a href=\"ch2.xhtml\">next</a>\n  <div style=\"background: url(../img/a.webp)\"></div>\n</body></html>";
-        let out = replaced(rewrite_document(xhtml, "OEBPS/text/ch1.xhtml", &r).unwrap());
+        let out =
+            replaced(rewrite_document(xhtml, "OEBPS/text/ch1.xhtml", &r, &HashSet::new()).unwrap());
         assert_eq!(
             out,
             "<?xml version=\"1.0\"?>\n<!-- a.webp -->\n<html><body>\n  <p>See <img  src='../img/a.jpg'\n alt=\"a.webp &amp; more\"/> and a.webp.</p>\n  <svg:image xlink:href=\"../img/b.jpg\"/><a href=\"ch2.xhtml\">next</a>\n  <div style=\"background: url(../img/a.jpg)\"></div>\n</body></html>"
@@ -402,8 +473,15 @@ mod tests {
     #[test]
     fn escaped_values_are_unescaped_then_escaped_again() {
         let r = renames(&["R&D.webp"], "jpg");
-        let out =
-            replaced(rewrite_document(r#"<img src="R&amp;D.webp"/>"#, "x.xhtml", &r).unwrap());
+        let out = replaced(
+            rewrite_document(
+                r#"<img src="R&amp;D.webp"/>"#,
+                "x.xhtml",
+                &r,
+                &HashSet::new(),
+            )
+            .unwrap(),
+        );
         assert_eq!(out, r#"<img src="R&amp;D.jpg"/>"#);
     }
 
@@ -412,7 +490,7 @@ mod tests {
         let r = renames(&["OEBPS/a.webp"], "jpg");
         let xhtml = r#"<html><body><img src="b.png"/></body></html>"#;
         assert_eq!(
-            rewrite_document(xhtml, "OEBPS/ch.xhtml", &r).unwrap(),
+            rewrite_document(xhtml, "OEBPS/ch.xhtml", &r, &HashSet::new()).unwrap(),
             Outcome::Keep
         );
     }
@@ -420,14 +498,16 @@ mod tests {
     #[test]
     fn broken_document_is_an_error() {
         let r = renames(&["a.webp"], "jpg");
-        assert!(rewrite_document("<p><img src=\"a.webp\"</p>", "x.xhtml", &r).is_err());
+        assert!(
+            rewrite_document("<p><img src=\"a.webp\"</p>", "x.xhtml", &r, &HashSet::new()).is_err()
+        );
     }
 
     #[test]
     fn html_style_void_tags_are_fine() {
         let r = renames(&["a.webp"], "jpg");
         let html = "<p>One<br>two <img src=\"a.webp\"></p>";
-        let out = replaced(rewrite_document(html, "x.html", &r).unwrap());
+        let out = replaced(rewrite_document(html, "x.html", &r, &HashSet::new()).unwrap());
         assert_eq!(out, "<p>One<br>two <img src=\"a.jpg\"></p>");
     }
 
@@ -435,8 +515,53 @@ mod tests {
     fn unknown_entity_skips_only_that_attribute() {
         let r = renames(&["a.webp"], "jpg");
         let xhtml = r#"<img alt="a&nbsp;b" src="a.webp"/>"#;
-        let out = replaced(rewrite_document(xhtml, "x.xhtml", &r).unwrap());
+        let out = replaced(rewrite_document(xhtml, "x.xhtml", &r, &HashSet::new()).unwrap());
         assert_eq!(out, r#"<img alt="a&nbsp;b" src="a.jpg"/>"#);
+    }
+
+    fn rotated(paths: &[&str]) -> HashSet<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn turned_image_loses_its_sizes() {
+        let xhtml = "<p><img class=\"f\" width=\"2391\" src=\"../img/wide.png\"\n   height='1000' style=\"width: 90%; max-width:100%;height:20em\" alt=\"\"/><img src=\"../img/tall.png\" width=\"300\"/></p>";
+        let out = replaced(
+            rewrite_document(
+                xhtml,
+                "OEBPS/text/ch.xhtml",
+                &Renames::default(),
+                &rotated(&["OEBPS/img/wide.png"]),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            out,
+            "<p><img class=\"f\" src=\"../img/wide.png\" style=\" max-width:100%\" alt=\"\"/><img src=\"../img/tall.png\" width=\"300\"/></p>"
+        );
+    }
+
+    #[test]
+    fn style_with_only_sizes_is_removed() {
+        let out = replaced(
+            rewrite_document(
+                r#"<img src="w.webp" style="width:600px;height:300px"/>"#,
+                "x.xhtml",
+                &renames(&["w.webp"], "jpg"),
+                &rotated(&["w.webp"]),
+            )
+            .unwrap(),
+        );
+        assert_eq!(out, r#"<img src="w.jpg"/>"#);
+    }
+
+    #[test]
+    fn sizes_are_kept_when_nothing_turned() {
+        let xhtml = r#"<img src="a.png" width="900" style="width:50%"/>"#;
+        assert_eq!(
+            rewrite_document(xhtml, "x.xhtml", &Renames::default(), &rotated(&["b.png"])).unwrap(),
+            Outcome::Keep
+        );
     }
 
     #[test]

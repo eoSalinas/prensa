@@ -23,7 +23,7 @@ mod refs;
 mod report;
 
 pub use error::{Error, Source};
-pub use options::{Device, InvalidOptions, Options, OptionsBuilder};
+pub use options::{Device, InvalidOptions, Options, OptionsBuilder, Rotation};
 pub use report::{Progress, Report, Warning};
 
 use error::from_zip;
@@ -187,20 +187,35 @@ where
             .map_err(|e| malformed(name, e.into()))?;
     }
 
-    // Images that may change format (WebP, BMP, GIF) are converted before
-    // anything is written: the new file name has to be known by every entry
-    // that refers to it, and some of those come earlier in the archive.
+    // What happens to each image must be known before anything is written:
+    // chapters that refer to an image can come earlier in the archive, and a
+    // renamed image (WebP, BMP, GIF) or a turned one changes them. Images that
+    // may change format are converted here; for JPEG and PNG, which keep their
+    // name, the header is enough to know whether they will be turned.
     let mut taken: HashSet<String> = entries.iter().map(|(n, _)| n.to_lowercase()).collect();
     let mut converted: HashMap<usize, ImageResult> = HashMap::new();
     for (i, (name, _)) in entries.iter().enumerate() {
-        let Some(kind) = images::kind_of(name).filter(|k| k.may_change_format()) else {
+        let Some(kind) = images::kind_of(name) else {
             continue;
         };
+        if !kind.may_change_format() {
+            if opts.rotate().is_some()
+                && let Some(bytes) = read_entry(&mut archive, i)?
+                && let Some((w, h)) = images::dimensions(kind, &bytes)
+                && images::rotation_for(w, h, opts).is_some()
+            {
+                book.rotated.insert(name.clone());
+            }
+            continue;
+        }
         let result = optimize_image(&mut archive, i, kind, opts)?;
         if let Ok(Some(image)) = &result {
             let format = image.format;
             book.renames
                 .add(name, format.extension(), format.media_type(), &mut taken);
+            if image.rotated {
+                book.rotated.insert(name.clone());
+            }
         }
         converted.insert(i, result);
     }
@@ -280,6 +295,9 @@ where
                         let new_name = book.renames.new_path(name).unwrap_or(name);
                         if new_name != name {
                             report.images_converted += 1;
+                        }
+                        if image.rotated {
+                            report.images_rotated += 1;
                         }
                         // JPEG/PNG are already compressed: deflating them again only costs CPU.
                         writer.start_file(new_name, stored).map_err(from_zip)?;
@@ -843,6 +861,47 @@ mod tests {
                 .message
                 .ends_with("image references in it not updated; copied unchanged"),
             "{warning}"
+        );
+    }
+
+    #[test]
+    fn wide_image_is_turned_and_loses_its_sizes() {
+        let mut png = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::new(2000, 800))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let chapter = br#"<html><body><p>Figure 1</p><img src="../img/wide.png" width="2000" height="800" alt="Figure 1"/></body></html>"#;
+        let input = zip_of(&[
+            ("OEBPS/img/wide.png", &png),
+            ("OEBPS/text/ch.xhtml", chapter),
+        ]);
+
+        let cw = Options::builder()
+            .rotate(Rotation::Clockwise)
+            .build()
+            .unwrap();
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(&input), &mut output, &cw).unwrap();
+        let after = read_all(output.get_ref());
+        let get = |n: &str| &after.iter().find(|(name, _)| name == n).unwrap().1;
+
+        assert_eq!(report.images_rotated, 1);
+        let img = image::load_from_memory(get("OEBPS/img/wide.png")).unwrap();
+        assert!(img.height() > img.width(), "turned to portrait");
+        assert_eq!(
+            String::from_utf8_lossy(get("OEBPS/text/ch.xhtml")),
+            r#"<html><body><p>Figure 1</p><img src="../img/wide.png" alt="Figure 1"/></body></html>"#
+        );
+
+        // Off (the default): the chapter stays as it was.
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
+        assert_eq!(report.images_rotated, 0);
+        let after = read_all(output.get_ref());
+        assert!(
+            after
+                .iter()
+                .any(|(n, b)| n == "OEBPS/text/ch.xhtml" && b == chapter)
         );
     }
 }

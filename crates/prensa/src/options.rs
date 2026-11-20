@@ -29,6 +29,20 @@ impl Device {
     }
 }
 
+/// Which way wide images are turned to fill a portrait screen.
+///
+/// The reader then turns the device the other way to read them: a clockwise
+/// image is read with the device turned counterclockwise. Clockwise matches
+/// CrossPoint's own optimizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Rotation {
+    /// Turn 90° clockwise.
+    Clockwise,
+    /// Turn 90° counterclockwise.
+    Counterclockwise,
+}
+
 /// Optimization settings, always valid.
 ///
 /// Use [`Options::default`] for the defaults, or [`Options::builder`] to change
@@ -60,6 +74,7 @@ pub struct Options {
     max_height: u32,
     jpeg_quality: u8,
     sharpen: Option<f32>,
+    rotate: Option<Rotation>,
 }
 
 impl Options {
@@ -88,6 +103,12 @@ impl Options {
     pub fn sharpen(&self) -> Option<f32> {
         self.sharpen
     }
+
+    /// Direction wide images are turned in, or `None` when they are never
+    /// turned. See [`OptionsBuilder::rotate`] for which images are.
+    pub fn rotate(&self) -> Option<Rotation> {
+        self.rotate
+    }
 }
 
 impl Default for Options {
@@ -98,6 +119,7 @@ impl Default for Options {
             max_height,
             jpeg_quality: 92,
             sharpen: Some(0.8),
+            rotate: None,
         }
     }
 }
@@ -147,6 +169,26 @@ impl OptionsBuilder {
     /// Do not sharpen images. Sharpening is on by default.
     pub fn no_sharpen(mut self) -> Self {
         self.opts.sharpen = None;
+        self
+    }
+
+    /// Turn wide images 90° in this direction, so that they are shown across
+    /// the screen's height and their text is bigger. Only images that would
+    /// be shrunk to less than a third of their size upright, and that turning
+    /// shows at least 30% larger, are turned: wide diagrams whose text would
+    /// be unreadable. Off by default: the reader has to turn the device for
+    /// each of them.
+    ///
+    /// A turned image loses its `width`/`height` attributes and inline CSS
+    /// sizes, which were set for the original orientation.
+    pub fn rotate(mut self, rotation: Rotation) -> Self {
+        self.opts.rotate = Some(rotation);
+        self
+    }
+
+    /// Never turn images (the default).
+    pub fn no_rotate(mut self) -> Self {
+        self.opts.rotate = None;
         self
     }
 
@@ -245,6 +287,23 @@ mod tests {
         let (w, h) = Device::X3.max_size();
         assert_eq!(w, (528.0_f64 * 440.0 / 480.0).round() as u32);
         assert_eq!(h, (792.0_f64 * 733.0 / 800.0).round() as u32);
+    }
+
+    #[test]
+    fn rotation_is_off_by_default() {
+        assert_eq!(Options::default().rotate(), None);
+        let cw = Options::builder()
+            .rotate(Rotation::Clockwise)
+            .build()
+            .unwrap();
+        assert_eq!(cw.rotate(), Some(Rotation::Clockwise));
+        let ccw = Options::builder()
+            .rotate(Rotation::Counterclockwise)
+            .build()
+            .unwrap();
+        assert_eq!(ccw.rotate(), Some(Rotation::Counterclockwise));
+        let off = Options::builder().no_rotate().build().unwrap();
+        assert_eq!(off.rotate(), None);
     }
 
     #[test]
