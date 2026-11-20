@@ -86,9 +86,11 @@ The work is split into passes, one module each:
 - `images.rs`: downscales, converts to grayscale, rewrites progressive JPEGs as
   baseline, converts formats the reader cannot show (WebP, BMP), and keeps the
   original when rewriting gains nothing
-- `refs.rs`: resolves `href`s to zip paths and updates references to renamed
-  images, replacing attribute values in place so the rest of each file is
-  kept byte for byte
+- `refs.rs`: resolves `href`s to zip paths and updates references to renamed,
+  turned or extracted images, replacing or removing attributes in place so
+  the rest of each file is kept byte for byte
+- `inline.rs`: moves images embedded as `data:` URIs out of chapters into
+  their own entries, and lists them in the manifest
 
 Images that may be renamed are converted before anything is written, since
 the entries referring to them can come earlier in the archive.

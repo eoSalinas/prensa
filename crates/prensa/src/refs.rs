@@ -14,7 +14,7 @@
 //! every other byte of the document is kept, so the element tree and the text
 //! never change.
 
-use crate::passes::Outcome;
+use crate::passes::{Book, Outcome};
 use anyhow::{Result, bail};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
@@ -196,27 +196,26 @@ pub(crate) fn rewrite_css(css: &str, entry: &str, renames: &Renames) -> Result<O
 
 /// Rewrite references to changed images in an XHTML or SVG document at
 /// `entry`: `src`, `href` and `xlink:href` attributes, and `url(...)` in
-/// `style` attributes, follow renamed images; an element showing a turned
-/// image (zip paths in `rotated`, before renaming) loses its sizes.
-pub(crate) fn rewrite_document(
-    xhtml: &str,
-    entry: &str,
-    renames: &Renames,
-    rotated: &HashSet<String>,
-) -> Result<Outcome> {
+/// `style` attributes, follow renamed images; `data:` URIs that were extracted
+/// point to their new file, wherever it is; an element showing a turned image loses its sizes.
+pub(crate) fn rewrite_document(xhtml: &str, entry: &str, book: &Book) -> Result<Outcome> {
     let base = dir_of(entry);
     edit_attributes(xhtml, |_, attrs| {
         let shows_rotated = attrs.iter().any(|(name, value)| {
             matches!(name.as_str(), "src" | "href")
-                && resolve(base, value).is_some_and(|path| rotated.contains(&path))
+                && (resolve(base, value).is_some_and(|path| book.rotated.contains(&path))
+                    || book.inline.get(value).is_some_and(|f| f.rotated))
         });
         let mut edits = Vec::new();
         for (i, (name, value)) in attrs.iter().enumerate() {
             let edit = match name.as_str() {
-                "src" | "href" => renames.new_href(base, value).map(Edit::Set),
+                "src" | "href" => match book.inline.get(value) {
+                    Some(file) => Some(Edit::Set(relative_href(base, &file.path))),
+                    None => book.renames.new_href(base, value).map(Edit::Set),
+                },
                 "width" | "height" if shows_rotated => Some(Edit::Remove),
                 "style" => {
-                    let css = renames.rewrite_css_urls(base, value);
+                    let css = book.renames.rewrite_css_urls(base, value);
                     let current = css.as_deref().unwrap_or(value);
                     match (shows_rotated.then(|| without_sizes(current)).flatten(), css) {
                         (Some(stripped), _) if stripped.trim().is_empty() => Some(Edit::Remove),
@@ -230,6 +229,53 @@ pub(crate) fn rewrite_document(
         }
         edits
     })
+}
+
+/// The `data:image/...` URIs in `src`, `href` and `xlink:href` attributes of
+/// an XHTML or SVG document, in order.
+pub(crate) fn data_uris(xhtml: &str) -> Result<Vec<String>> {
+    let mut uris = Vec::new();
+    edit_attributes(xhtml, |_, attrs| {
+        uris.extend(
+            attrs
+                .iter()
+                .filter(|(name, value)| {
+                    matches!(name.as_str(), "src" | "href") && value.starts_with("data:image/")
+                })
+                .map(|(_, value)| value.clone()),
+        );
+        Vec::new()
+    })?;
+    Ok(uris)
+}
+
+/// `href` from a document in the directory `from_dir` to the zip path `to`,
+/// with each path segment percent-encoded.
+pub(crate) fn relative_href(from_dir: &str, to: &str) -> String {
+    let from: Vec<&str> = from_dir.split('/').filter(|p| !p.is_empty()).collect();
+    let to: Vec<&str> = to.split('/').filter(|p| !p.is_empty()).collect();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(to.len().saturating_sub(1));
+    let ups = std::iter::repeat_n("..".to_owned(), from.len() - common);
+    let downs = to[common..].iter().map(|p| percent_encode(p));
+    ups.chain(downs).collect::<Vec<_>>().join("/")
+}
+
+/// Percent-encode everything but unreserved URL characters.
+fn percent_encode(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// `style` attribute text without its `width` and `height` declarations, or
@@ -401,6 +447,14 @@ mod tests {
         renames
     }
 
+    fn book(renames: Renames, rotated: HashSet<String>) -> Book {
+        Book {
+            renames,
+            rotated,
+            ..Book::default()
+        }
+    }
+
     fn replaced(outcome: Outcome) -> String {
         match outcome {
             Outcome::Replace(text) => text,
@@ -421,6 +475,21 @@ mod tests {
         assert_eq!(resolve("OEBPS", "data:image/png;base64,AAAA"), None);
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz"), "%zz");
+    }
+
+    #[test]
+    fn relative_hrefs() {
+        assert_eq!(relative_href("OEBPS/text", "OEBPS/text/a.png"), "a.png");
+        assert_eq!(
+            relative_href("OEBPS", "OEBPS/Text Files/a b.png"),
+            "Text%20Files/a%20b.png"
+        );
+        assert_eq!(
+            relative_href("OEBPS/text", "OEBPS/img/a.png"),
+            "../img/a.png"
+        );
+        assert_eq!(relative_href("", "a.png"), "a.png");
+        assert_eq!(relative_href("a/b", "c.png"), "../../c.png");
     }
 
     #[test]
@@ -462,8 +531,9 @@ mod tests {
     fn rewrites_only_the_attribute_values() {
         let r = renames(&["OEBPS/img/a.webp", "OEBPS/img/b.bmp"], "jpg");
         let xhtml = "<?xml version=\"1.0\"?>\n<!-- a.webp -->\n<html><body>\n  <p>See <img  src='../img/a.webp'\n alt=\"a.webp &amp; more\"/> and a.webp.</p>\n  <svg:image xlink:href=\"../img/b.bmp\"/><a href=\"ch2.xhtml\">next</a>\n  <div style=\"background: url(../img/a.webp)\"></div>\n</body></html>";
-        let out =
-            replaced(rewrite_document(xhtml, "OEBPS/text/ch1.xhtml", &r, &HashSet::new()).unwrap());
+        let out = replaced(
+            rewrite_document(xhtml, "OEBPS/text/ch1.xhtml", &book(r, HashSet::new())).unwrap(),
+        );
         assert_eq!(
             out,
             "<?xml version=\"1.0\"?>\n<!-- a.webp -->\n<html><body>\n  <p>See <img  src='../img/a.jpg'\n alt=\"a.webp &amp; more\"/> and a.webp.</p>\n  <svg:image xlink:href=\"../img/b.jpg\"/><a href=\"ch2.xhtml\">next</a>\n  <div style=\"background: url(../img/a.jpg)\"></div>\n</body></html>"
@@ -477,8 +547,7 @@ mod tests {
             rewrite_document(
                 r#"<img src="R&amp;D.webp"/>"#,
                 "x.xhtml",
-                &r,
-                &HashSet::new(),
+                &book(r, HashSet::new()),
             )
             .unwrap(),
         );
@@ -490,7 +559,7 @@ mod tests {
         let r = renames(&["OEBPS/a.webp"], "jpg");
         let xhtml = r#"<html><body><img src="b.png"/></body></html>"#;
         assert_eq!(
-            rewrite_document(xhtml, "OEBPS/ch.xhtml", &r, &HashSet::new()).unwrap(),
+            rewrite_document(xhtml, "OEBPS/ch.xhtml", &book(r, HashSet::new())).unwrap(),
             Outcome::Keep
         );
     }
@@ -499,7 +568,12 @@ mod tests {
     fn broken_document_is_an_error() {
         let r = renames(&["a.webp"], "jpg");
         assert!(
-            rewrite_document("<p><img src=\"a.webp\"</p>", "x.xhtml", &r, &HashSet::new()).is_err()
+            rewrite_document(
+                "<p><img src=\"a.webp\"</p>",
+                "x.xhtml",
+                &book(r, HashSet::new())
+            )
+            .is_err()
         );
     }
 
@@ -507,7 +581,7 @@ mod tests {
     fn html_style_void_tags_are_fine() {
         let r = renames(&["a.webp"], "jpg");
         let html = "<p>One<br>two <img src=\"a.webp\"></p>";
-        let out = replaced(rewrite_document(html, "x.html", &r, &HashSet::new()).unwrap());
+        let out = replaced(rewrite_document(html, "x.html", &book(r, HashSet::new())).unwrap());
         assert_eq!(out, "<p>One<br>two <img src=\"a.jpg\"></p>");
     }
 
@@ -515,7 +589,7 @@ mod tests {
     fn unknown_entity_skips_only_that_attribute() {
         let r = renames(&["a.webp"], "jpg");
         let xhtml = r#"<img alt="a&nbsp;b" src="a.webp"/>"#;
-        let out = replaced(rewrite_document(xhtml, "x.xhtml", &r, &HashSet::new()).unwrap());
+        let out = replaced(rewrite_document(xhtml, "x.xhtml", &book(r, HashSet::new())).unwrap());
         assert_eq!(out, r#"<img alt="a&nbsp;b" src="a.jpg"/>"#);
     }
 
@@ -530,8 +604,7 @@ mod tests {
             rewrite_document(
                 xhtml,
                 "OEBPS/text/ch.xhtml",
-                &Renames::default(),
-                &rotated(&["OEBPS/img/wide.png"]),
+                &book(Renames::default(), rotated(&["OEBPS/img/wide.png"])),
             )
             .unwrap(),
         );
@@ -547,8 +620,7 @@ mod tests {
             rewrite_document(
                 r#"<img src="w.webp" style="width:600px;height:300px"/>"#,
                 "x.xhtml",
-                &renames(&["w.webp"], "jpg"),
-                &rotated(&["w.webp"]),
+                &book(renames(&["w.webp"], "jpg"), rotated(&["w.webp"])),
             )
             .unwrap(),
         );
@@ -559,7 +631,12 @@ mod tests {
     fn sizes_are_kept_when_nothing_turned() {
         let xhtml = r#"<img src="a.png" width="900" style="width:50%"/>"#;
         assert_eq!(
-            rewrite_document(xhtml, "x.xhtml", &Renames::default(), &rotated(&["b.png"])).unwrap(),
+            rewrite_document(
+                xhtml,
+                "x.xhtml",
+                &book(Renames::default(), rotated(&["b.png"]))
+            )
+            .unwrap(),
             Outcome::Keep
         );
     }

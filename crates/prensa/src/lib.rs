@@ -17,6 +17,7 @@
 mod error;
 mod fonts;
 mod images;
+mod inline;
 mod options;
 mod passes;
 mod refs;
@@ -187,6 +188,8 @@ where
             .map_err(|e| malformed(name, e.into()))?;
     }
 
+    let mut report = Report::default();
+
     // What happens to each image must be known before anything is written:
     // chapters that refer to an image can come earlier in the archive, and a
     // renamed image (WebP, BMP, GIF) or a turned one changes them. Images that
@@ -220,6 +223,30 @@ where
         converted.insert(i, result);
     }
 
+    // Images embedded in chapters as `data:` URIs become entries of their own,
+    // listed in the manifest (which may come before the chapters).
+    for (i, (name, _)) in entries.iter().enumerate() {
+        if !passes::is_document(name) {
+            continue;
+        }
+        let Some(bytes) = read_entry(&mut archive, i)? else {
+            continue;
+        };
+        // Chapters that are not UTF-8 or not XML are reported by their
+        // rewrite, if they have anything to rewrite.
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        if !text.contains("data:image/") {
+            continue;
+        }
+        let Ok(uris) = refs::data_uris(text) else {
+            continue;
+        };
+        book.inline
+            .extract(name, uris, opts, &mut taken, &mut report.warnings);
+    }
+
     // Files that survive the passes, used to drop directory entries left empty
     // (e.g. `fonts/` after removing the fonts inside it).
     let kept_files: Vec<&str> = entries
@@ -230,7 +257,6 @@ where
         })
         .collect();
 
-    let mut report = Report::default();
     let total = entries.len();
     for (i, (name, size)) in entries.iter().enumerate() {
         on_progress(Progress {
@@ -316,6 +342,26 @@ where
                 copy_raw(&mut archive, &mut writer, i)?;
             }
         }
+    }
+
+    for file in &book.inline.files {
+        report.images_extracted += 1;
+        if file.changed {
+            report.images_changed += 1;
+        } else {
+            report.images_kept += 1;
+        }
+        if file.rotated {
+            report.images_rotated += 1;
+        }
+        // Inside the chapter the image was base64 text, compressed with it;
+        // its decoded size is the closest to an image entry's size.
+        report.image_bytes_before += file.original_len as u64;
+        report.image_bytes_after += file.bytes.len() as u64;
+        writer
+            .start_file(file.path.as_str(), stored)
+            .map_err(from_zip)?;
+        writer.write_all(&file.bytes)?;
     }
 
     writer.finish().map_err(from_zip)?;
@@ -903,5 +949,60 @@ mod tests {
                 .iter()
                 .any(|(n, b)| n == "OEBPS/text/ch.xhtml" && b == chapter)
         );
+    }
+
+    #[test]
+    fn embedded_image_moves_to_its_own_entry() {
+        use base64::Engine;
+        let mut png = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::new(900, 300))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let uri = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        );
+        let chapter = format!(
+            r#"<html><body><p>A</p><img src="{uri}" alt="a"/><p>B</p><img src="{uri}"/></body></html>"#
+        );
+        let other = format!(r#"<html><body><img src="{uri}"/></body></html>"#);
+        let opf: &[u8] = br#"<package><manifest><item id="c" href="text/ch.xhtml" media-type="application/xhtml+xml"/></manifest></package>"#;
+        let input = zip_of(&[
+            ("OEBPS/content.opf", opf),
+            ("OEBPS/text/ch.xhtml", chapter.as_bytes()),
+            ("OEBPS/other/end.xhtml", other.as_bytes()),
+        ]);
+
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
+        let after = read_all(output.get_ref());
+        let text = |n: &str| {
+            String::from_utf8_lossy(&after.iter().find(|(name, _)| name == n).unwrap().1)
+                .into_owned()
+        };
+
+        assert_eq!(report.images_extracted, 1);
+        assert_eq!(report.images_changed, 1);
+        let new_chapter = text("OEBPS/text/ch.xhtml");
+        assert_eq!(
+            new_chapter,
+            r#"<html><body><p>A</p><img src="ch-image-1.png" alt="a"/><p>B</p><img src="ch-image-1.png"/></body></html>"#
+        );
+        assert_eq!(visible_text(&chapter), visible_text(&new_chapter));
+        assert_eq!(tags(&chapter), tags(&new_chapter));
+        // The same image in another chapter: the same file.
+        assert_eq!(
+            text("OEBPS/other/end.xhtml"),
+            r#"<html><body><img src="../text/ch-image-1.png"/></body></html>"#
+        );
+        let image = &after
+            .iter()
+            .find(|(n, _)| n == "OEBPS/text/ch-image-1.png")
+            .unwrap()
+            .1;
+        assert_eq!(image::load_from_memory(image).unwrap().width(), 440);
+        assert!(text("OEBPS/content.opf").contains(
+            r#"<item id="prensa-ch-image-1-png" href="text/ch-image-1.png" media-type="image/png"/></manifest>"#
+        ));
     }
 }

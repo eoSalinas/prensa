@@ -220,6 +220,7 @@ fn print_summary(output: &Path, sizes: &Sizes) {
         let details: Vec<String> = [
             (r.images_converted, "converted to JPEG/PNG"),
             (r.images_rotated, "turned"),
+            (r.images_extracted, "moved out of chapters"),
         ]
         .into_iter()
         .filter(|(n, _)| *n > 0)

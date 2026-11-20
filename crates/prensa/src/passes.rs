@@ -6,6 +6,7 @@
 
 use crate::fonts::{self, Fonts};
 use crate::images;
+use crate::inline::{self, Inline};
 use crate::refs::{self, Renames};
 use anyhow::Result;
 use std::collections::HashSet;
@@ -21,6 +22,15 @@ pub(crate) struct Book {
     /// Zip paths (before renaming) of images turned 90°, whose references
     /// lose the sizes set for the original orientation.
     pub(crate) rotated: HashSet<String>,
+    /// Images moved out of `data:` URIs in chapters into their own entries.
+    pub(crate) inline: Inline,
+}
+
+impl Book {
+    /// Whether chapters have references to update.
+    fn changes_chapters(&self) -> bool {
+        !(self.renames.is_empty() && self.rotated.is_empty() && self.inline.is_empty())
+    }
 }
 
 /// What to do with each zip entry.
@@ -80,11 +90,17 @@ pub(crate) enum Fallback {
     Reject,
 }
 
+/// Whether the entry is a chapter or other document that can show images
+/// (XHTML, HTML, SVG).
+pub(crate) fn is_document(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [".xhtml", ".html", ".htm", ".svg"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+}
+
 pub(crate) fn decide(name: &str, book: &Book) -> Action {
     let lower = name.to_ascii_lowercase();
-    let is_document = [".xhtml", ".html", ".htm", ".svg"]
-        .iter()
-        .any(|ext| lower.ends_with(ext));
     if name == "mimetype" {
         Action::Skip
     } else if book.fonts.contains(name) {
@@ -100,11 +116,8 @@ pub(crate) fn decide(name: &str, book: &Book) -> Action {
         )
     } else if let Some(kind) = images::kind_of(name) {
         Action::Image(kind)
-    } else if is_document && !(book.renames.is_empty() && book.rotated.is_empty()) {
-        Action::Rewrite(
-            |doc, entry, book| refs::rewrite_document(doc, entry, &book.renames, &book.rotated),
-            Fallback::CopyWithWarning,
-        )
+    } else if is_document(name) && book.changes_chapters() {
+        Action::Rewrite(refs::rewrite_document, Fallback::CopyWithWarning)
     } else {
         Action::CopyRaw
     }
@@ -117,7 +130,13 @@ fn rewrite_css(css: &str, entry: &str, book: &Book) -> Result<Outcome> {
 
 fn rewrite_opf(opf: &str, entry: &str, book: &Book) -> Result<Outcome> {
     fonts::remove_manifest_items(opf, &book.fonts)?
-        .then(opf, |opf| refs::rewrite_opf(opf, entry, &book.renames))
+        .then(opf, |opf| refs::rewrite_opf(opf, entry, &book.renames))?
+        .then(opf, |opf| {
+            Ok(match inline::manifest_items(opf, entry, &book.inline) {
+                Some(opf) => Outcome::Replace(opf),
+                None => Outcome::Keep,
+            })
+        })
 }
 
 #[cfg(test)]
