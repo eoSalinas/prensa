@@ -115,6 +115,41 @@ pub struct Progress<'a> {
     pub entry: &'a str,
 }
 
+/// Largest entry read into memory to be rewritten (CSS, OPF, images).
+///
+/// Real books stay far below this; a bigger entry is a zip bomb or a broken
+/// archive, and reading it would exhaust memory. Small in tests so the limit
+/// can be hit without writing hundreds of megabytes.
+const MAX_ENTRY_SIZE: u64 = if cfg!(test) {
+    64 * 1024
+} else {
+    128 * 1024 * 1024
+};
+
+/// Read entry `i` fully, or `None` if it is larger than [`MAX_ENTRY_SIZE`].
+///
+/// The declared size is checked first, but it comes from the archive and can
+/// lie, so the read itself is capped too.
+fn read_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    i: usize,
+) -> Result<Option<Vec<u8>>, Error> {
+    let entry = archive.by_index(i).map_err(from_zip)?;
+    if entry.size() > MAX_ENTRY_SIZE {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    entry.take(MAX_ENTRY_SIZE + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= MAX_ENTRY_SIZE).then_some(bytes))
+}
+
+fn too_large() -> String {
+    format!(
+        "entry is larger than {} MiB",
+        MAX_ENTRY_SIZE / (1024 * 1024)
+    )
+}
+
 /// What to do with each zip entry.
 enum Action {
     Skip,
@@ -255,11 +290,10 @@ where
                 .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
                 .map_err(from_zip)?,
             Action::Rewrite(transform, not_utf8) => {
-                let mut bytes = Vec::new();
-                archive
-                    .by_index(i)
-                    .map_err(from_zip)?
-                    .read_to_end(&mut bytes)?;
+                let bytes = read_entry(&mut archive, i)?.ok_or_else(|| Error::Malformed {
+                    entry: name.clone(),
+                    source: too_large().into(),
+                })?;
                 match String::from_utf8(bytes) {
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
@@ -289,13 +323,12 @@ where
                 }
             }
             Action::Image(kind) => {
-                let mut bytes = Vec::new();
-                archive
-                    .by_index(i)
-                    .map_err(from_zip)?
-                    .read_to_end(&mut bytes)?;
                 report.image_bytes_before += size;
-                match images::optimize(kind, &bytes, opts) {
+                let result = match read_entry(&mut archive, i)? {
+                    Some(bytes) => images::optimize(kind, &bytes, opts),
+                    None => Err(anyhow::anyhow!(too_large())),
+                };
+                match result {
                     Ok(Some(new_bytes)) => {
                         report.images_changed += 1;
                         report.image_bytes_after += new_bytes.len() as u64;
@@ -578,6 +611,53 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         let err = optimize(FailingReader, &mut output, &Options::default());
         assert!(matches!(err, Err(Error::Io(_))), "got {err:?}");
+    }
+
+    /// Zip with a single deflated entry of `size` zero bytes.
+    fn zip_with_zeros(name: &str, size: u64) -> Vec<u8> {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        std::io::copy(&mut std::io::repeat(0).take(size), &mut zip).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn oversized_text_entry_fails_the_book() {
+        let input = zip_with_zeros("OEBPS/style.css", MAX_ENTRY_SIZE + 1);
+        let mut output = Cursor::new(Vec::new());
+        match optimize(Cursor::new(input), &mut output, &Options::default()) {
+            Err(Error::Malformed { entry, source }) => {
+                assert_eq!(entry, "OEBPS/style.css");
+                assert!(source.to_string().contains("larger than"), "{source}");
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oversized_image_is_copied_unchanged() {
+        let input = zip_with_zeros("OEBPS/a.png", MAX_ENTRY_SIZE + 1);
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0].contains("larger than"),
+            "{:?}",
+            report.warnings
+        );
+        let after = read_all(output.get_ref());
+        assert_eq!(after[1].0, "OEBPS/a.png");
+        assert_eq!(after[1].1.len() as u64, MAX_ENTRY_SIZE + 1);
+    }
+
+    #[test]
+    fn entry_at_the_limit_is_read() {
+        let input = zip_with_zeros("OEBPS/style.css", MAX_ENTRY_SIZE);
+        let mut archive = ZipArchive::new(Cursor::new(input)).unwrap();
+        let bytes = read_entry(&mut archive, 0)
+            .unwrap()
+            .expect("within the limit");
+        assert_eq!(bytes.len() as u64, MAX_ENTRY_SIZE);
     }
 
     #[test]
