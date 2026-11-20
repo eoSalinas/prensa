@@ -164,7 +164,7 @@ fn print_summary(output: &Path, sizes: &Sizes) {
     };
     println!("{ok} {:<8} {fonts}", "Fonts");
 
-    let total_images = r.images_changed + r.images_kept + r.warnings.len();
+    let total_images = r.images_changed + r.images_kept + r.images_failed;
     let images = if total_images == 0 {
         style("none".to_string()).dim().to_string()
     } else {
