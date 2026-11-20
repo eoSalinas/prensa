@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use console::{Term, style};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use prensa::{Options, Progress, Report};
+use prensa::{Device, Options, Progress, Report};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -20,18 +20,39 @@ struct Cli {
     input: PathBuf,
     /// Output EPUB
     output: PathBuf,
-    /// Maximum image width, in pixels
-    #[arg(long, default_value_t = Options::default().max_width(), value_parser = clap::value_parser!(u32).range(1..))]
-    max_width: u32,
-    /// Maximum image height, in pixels
-    #[arg(long, default_value_t = Options::default().max_height(), value_parser = clap::value_parser!(u32).range(1..))]
-    max_height: u32,
+    /// E-reader to fit images to
+    #[arg(long, value_enum, default_value_t = DeviceArg::X4)]
+    device: DeviceArg,
+    /// Maximum image width, in pixels [default: from --device, 440 for x4]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    max_width: Option<u32>,
+    /// Maximum image height, in pixels [default: from --device, 733 for x4]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    max_height: Option<u32>,
     /// JPEG quality (1-100)
     #[arg(long, default_value_t = Options::default().jpeg_quality(), value_parser = clap::value_parser!(u8).range(1..=100))]
     quality: u8,
     /// Sharpening after downscaling (unsharp mask sigma; 0 disables)
     #[arg(long, default_value_t = Options::default().sharpen().unwrap_or(0.0))]
     sharpen: f32,
+}
+
+/// `--device` values. The library's [`Device`] does not depend on clap.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum DeviceArg {
+    /// Xteink X4: images fit 440x733
+    X4,
+    /// Xteink X3: images fit 484x726 (not yet tested on the device)
+    X3,
+}
+
+impl From<DeviceArg> for Device {
+    fn from(arg: DeviceArg) -> Self {
+        match arg {
+            DeviceArg::X4 => Device::X4,
+            DeviceArg::X3 => Device::X3,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -42,8 +63,15 @@ fn main() -> Result<()> {
         console::set_colors_enabled_stderr(false);
     }
 
+    // `--max-width`/`--max-height` override the device's box, one side at a time.
+    let device = Device::from(cli.device);
+    let (width, height) = device.max_size();
     let builder = Options::builder()
-        .max_size(cli.max_width, cli.max_height)
+        .device(device)
+        .max_size(
+            cli.max_width.unwrap_or(width),
+            cli.max_height.unwrap_or(height),
+        )
         .jpeg_quality(cli.quality);
     // `--sharpen 0` is how the command line turns sharpening off.
     let builder = if cli.sharpen == 0.0 {
