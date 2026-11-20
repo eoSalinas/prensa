@@ -36,7 +36,11 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 /// page; the last one won. 440x733 sits close to the reader viewport (480x800
 /// minus bezel and margins), so the device does not resample again with its
 /// low-quality fixed-point scaler.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Clone` but deliberately not `Copy`, so options that are not `Copy` (a list
+/// of entries to skip, a device profile name) can be added without a breaking
+/// change.
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Options {
     /// Maximum image width, in pixels. At least 1.
