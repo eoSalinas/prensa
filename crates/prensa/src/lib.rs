@@ -434,6 +434,16 @@ mod tests {
             .collect()
     }
 
+    /// Zip with one deflated entry per `(name, bytes)`, in order.
+    fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -485,11 +495,7 @@ mod tests {
     #[test]
     fn sizes_are_as_stored_in_the_epub() {
         // A deflated font that compresses well: stored size << real size.
-        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file("f.ttf", SimpleFileOptions::default())
-            .unwrap();
-        zip.write_all(&[0u8; 10_000]).unwrap();
-        let input = zip.finish().unwrap().into_inner();
+        let input = zip_of(&[("f.ttf", &[0; 10_000])]);
         let stored = ZipArchive::new(Cursor::new(&input))
             .unwrap()
             .by_index_raw(0)
@@ -509,16 +515,6 @@ mod tests {
         assert!(matches!(err, Err(Error::InvalidZip(_))));
     }
 
-    /// Zip with one deflated entry per `(name, bytes)`, plus a font.
-    fn zip_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-        for (name, bytes) in entries.iter().chain([&("OEBPS/f.ttf", &b"font"[..])]) {
-            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
-            zip.write_all(bytes).unwrap();
-        }
-        zip.finish().unwrap().into_inner()
-    }
-
     fn utf16(text: &str) -> Vec<u8> {
         [0xFF, 0xFE]
             .into_iter()
@@ -536,7 +532,7 @@ mod tests {
             ("OEBPS/content.opf", &opf),
             ("META-INF/encryption.xml", &enc),
         ] {
-            let input = zip_with(&[(name, bytes)]);
+            let input = zip_of(&[(name, bytes), ("OEBPS/f.ttf", b"font")]);
             let mut output = Cursor::new(Vec::new());
             match optimize(Cursor::new(input), &mut output, &Options::default()) {
                 Err(Error::Malformed { entry, .. }) => assert_eq!(entry, name),
@@ -549,7 +545,7 @@ mod tests {
     fn copies_css_that_is_not_utf8() {
         // Latin-1 `é` in a comment: invalid UTF-8.
         let css = b"/* caf\xe9 */ @font-face { src: url(f.ttf) }";
-        let input = zip_with(&[("OEBPS/style.css", css)]);
+        let input = zip_of(&[("OEBPS/style.css", css)]);
         let mut output = Cursor::new(Vec::new());
         optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
         let after = read_all(output.get_ref());
@@ -577,12 +573,9 @@ mod tests {
         assert!(matches!(err, Err(Error::Io(_))), "got {err:?}");
     }
 
-    /// Zip with a single deflated entry of `size` zero bytes.
+    /// Zip with a single entry of `size` zero bytes.
     fn zip_with_zeros(name: &str, size: u64) -> Vec<u8> {
-        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file(name, SimpleFileOptions::default()).unwrap();
-        std::io::copy(&mut std::io::repeat(0).take(size), &mut zip).unwrap();
-        zip.finish().unwrap().into_inner()
+        zip_of(&[(name, &vec![0; size as usize])])
     }
 
     #[test]
@@ -626,7 +619,6 @@ mod tests {
 
     #[test]
     fn removes_fonts_declared_only_by_media_type() {
-        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         let files: [(&str, &[u8]); 4] = [
             (
                 "OEBPS/content.opf",
@@ -639,11 +631,7 @@ mod tests {
                 br#"<encryption><EncryptedData><CipherReference URI="OEBPS/fonts/f0001"/></EncryptedData></encryption>"#,
             ),
         ];
-        for (name, bytes) in files {
-            zip.start_file(name, SimpleFileOptions::default()).unwrap();
-            zip.write_all(bytes).unwrap();
-        }
-        let input = zip.finish().unwrap().into_inner();
+        let input = zip_of(&files);
 
         let mut output = Cursor::new(Vec::new());
         let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
@@ -657,11 +645,7 @@ mod tests {
 
     #[test]
     fn undecodable_image_is_a_warning_naming_the_entry() {
-        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file("OEBPS/a.png", SimpleFileOptions::default())
-            .unwrap();
-        zip.write_all(b"not a png").unwrap();
-        let input = zip.finish().unwrap().into_inner();
+        let input = zip_of(&[("OEBPS/a.png", b"not a png")]);
 
         let mut output = Cursor::new(Vec::new());
         let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
@@ -682,7 +666,7 @@ mod tests {
 
     #[test]
     fn truncated_jpeg_warning_is_one_line() {
-        let input = zip_with(&[("OEBPS/a.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")]);
+        let input = zip_of(&[("OEBPS/a.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")]);
         let mut output = Cursor::new(Vec::new());
         let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
         let [warning] = report.warnings.as_slice() else {
@@ -697,11 +681,7 @@ mod tests {
 
     #[test]
     fn broken_opf_names_the_entry() {
-        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file("OEBPS/content.opf", SimpleFileOptions::default())
-            .unwrap();
-        zip.write_all(b"<package><manifest></package>").unwrap();
-        let input = zip.finish().unwrap().into_inner();
+        let input = zip_of(&[("OEBPS/content.opf", b"<package><manifest></package>")]);
 
         let mut output = Cursor::new(Vec::new());
         match optimize(Cursor::new(input), &mut output, &Options::default()) {
