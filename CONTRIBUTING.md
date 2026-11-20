@@ -91,9 +91,10 @@ one pass.
 Every change must keep these true:
 
 - the input file is never modified
-- the visible text of the book is identical before and after
-  (`visible_text_is_unchanged` in `lib.rs` checks this on randomly generated
-  books)
+- the visible text of the book and its element structure (tags, in order)
+  are identical before and after; only image attributes and image bytes may
+  change (`visible_text_and_structure_are_unchanged` in `lib.rs` checks this
+  on randomly generated books)
 - the output is a valid EPUB container: `mimetype` first and uncompressed
 
 If your change touches how entries are written, run the tests and also try a

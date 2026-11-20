@@ -157,8 +157,10 @@ it if you need atomic writes.
 ## Guarantees
 
 - The input file is never modified; the output is written atomically.
-- The visible text of the book is identical before and after. This is checked
-  by a property-based test over randomly generated books.
+- The visible text of the book and the elements around it (paragraphs,
+  headings, images, in order) are identical before and after, so reading
+  positions saved by sync services such as KOReader's stay valid. This is
+  checked by a property-based test over randomly generated books.
 - The output is a valid EPUB container (`mimetype` first and uncompressed).
 
 ## Limitations
