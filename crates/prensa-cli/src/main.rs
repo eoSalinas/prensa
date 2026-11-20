@@ -40,7 +40,8 @@ struct Cli {
 /// `--device` values. The library's [`Device`] does not depend on clap.
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum DeviceArg {
-    /// Xteink X4: images fit 440x733
+    /// Xteink X4, X4 Pro and X4 Classic (same screen): images fit 440x733
+    #[value(alias = "x4-pro", alias = "x4-classic")]
     X4,
     /// Xteink X3: images fit 484x726 (not yet tested on the device)
     X3,

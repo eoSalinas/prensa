@@ -8,8 +8,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum Device {
-    /// Xteink X4 (screen 480x800): images fit 440x733. Chosen in a side-by-side
-    /// comparison on an X4 Pro running CrossPoint. The default.
+    /// Xteink X4, X4 Pro and X4 Classic (same 480x800 panel): images fit
+    /// 440x733. Chosen in a side-by-side comparison on an X4 Pro running
+    /// CrossPoint. The default.
     #[default]
     X4,
     /// Xteink X3 (screen 528x792): images fit 484x726, the X4 box scaled to
