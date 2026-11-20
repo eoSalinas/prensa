@@ -27,6 +27,19 @@ dropped. `prensa` downscales them, so they show up.
 
 *Pro Git, Figure 10. 24 of the book's 188 images are dropped by the firmware; after `prensa`, all of them render.*
 
+### Tiny diagram → readable (optional)
+
+Figure 10 now shows, but at 440 px wide its small text is hard to read. With
+`--rotate cw`, diagrams that would be shrunk to less than a third of their
+size are turned to fill the screen's height instead, up to 1.67× larger. Turn
+the device to read them. Off by default.
+
+| `prensa` | `prensa --rotate cw` |
+|---|---|
+| ![Pro Git, Figure 10, upright: small text](docs/images/progit-fig10-after.jpg) | ![Pro Git, Figure 10, turned: fills the screen's height](docs/images/progit-fig10-rotated.jpg) |
+
+*Pro Git, Figure 10. 68 of the book's 188 images are turned; the rest stay upright.*
+
 ### Unreadable → readable
 
 Large diagrams are downscaled on the device with a simple fixed-point scaler,
