@@ -21,16 +21,16 @@ struct Cli {
     /// Output EPUB
     output: PathBuf,
     /// Maximum image width, in pixels
-    #[arg(long, default_value_t = Options::default().max_width, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, default_value_t = Options::default().max_width(), value_parser = clap::value_parser!(u32).range(1..))]
     max_width: u32,
     /// Maximum image height, in pixels
-    #[arg(long, default_value_t = Options::default().max_height, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, default_value_t = Options::default().max_height(), value_parser = clap::value_parser!(u32).range(1..))]
     max_height: u32,
     /// JPEG quality (1-100)
-    #[arg(long, default_value_t = Options::default().jpeg_quality, value_parser = clap::value_parser!(u8).range(1..=100))]
+    #[arg(long, default_value_t = Options::default().jpeg_quality(), value_parser = clap::value_parser!(u8).range(1..=100))]
     quality: u8,
     /// Sharpening after downscaling (unsharp mask sigma; 0 disables)
-    #[arg(long, default_value_t = Options::default().sharpen)]
+    #[arg(long, default_value_t = Options::default().sharpen().unwrap_or(0.0))]
     sharpen: f32,
 }
 
@@ -42,12 +42,16 @@ fn main() -> Result<()> {
         console::set_colors_enabled_stderr(false);
     }
 
-    // `Options` is `#[non_exhaustive]`: built from the default, then changed field by field.
-    let mut opts = Options::default();
-    opts.max_width = cli.max_width;
-    opts.max_height = cli.max_height;
-    opts.jpeg_quality = cli.quality;
-    opts.sharpen = cli.sharpen;
+    let builder = Options::builder()
+        .max_size(cli.max_width, cli.max_height)
+        .jpeg_quality(cli.quality);
+    // `--sharpen 0` is how the command line turns sharpening off.
+    let builder = if cli.sharpen == 0.0 {
+        builder.no_sharpen()
+    } else {
+        builder.sharpen(cli.sharpen)
+    };
+    let opts = builder.build()?;
 
     let stderr = Term::stderr();
     if stderr.is_term() {

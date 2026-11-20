@@ -17,71 +17,16 @@
 mod error;
 mod fonts;
 mod images;
+mod options;
 
 pub use error::{Error, Source};
+pub use options::{InvalidOptions, Options, OptionsBuilder};
 
 use error::from_zip;
 use fonts::Fonts;
 use std::io::{Read, Seek, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
-
-/// Optimization settings. Start from [`Options::default`] and change what you need.
-///
-/// [`optimize`] rejects values out of the ranges documented on each field with
-/// [`Error::InvalidOptions`].
-///
-/// The defaults won a side-by-side comparison on an Xteink X4 Pro (CrossPoint):
-/// Q85, Q92, Q92 + sharpening and Q92 + sharpening + 440 px on the same diagram
-/// page; the last one won. 440x733 sits close to the reader viewport (480x800
-/// minus bezel and margins), so the device does not resample again with its
-/// low-quality fixed-point scaler.
-///
-/// `Clone` but deliberately not `Copy`, so options that are not `Copy` (a list
-/// of entries to skip, a device profile name) can be added without a breaking
-/// change.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct Options {
-    /// Maximum image width, in pixels. At least 1.
-    pub max_width: u32,
-    /// Maximum image height, in pixels. At least 1.
-    pub max_height: u32,
-    /// JPEG quality, 1-100.
-    pub jpeg_quality: u8,
-    /// Unsharp mask sigma applied after downscaling, finite and not negative.
-    /// `0` disables sharpening.
-    pub sharpen: f32,
-}
-
-impl Options {
-    /// Check every field against its documented range.
-    fn validate(&self) -> Result<(), Error> {
-        let problem = if self.max_width == 0 {
-            "max_width must be at least 1"
-        } else if self.max_height == 0 {
-            "max_height must be at least 1"
-        } else if !(1..=100).contains(&self.jpeg_quality) {
-            "jpeg_quality must be between 1 and 100"
-        } else if !self.sharpen.is_finite() || self.sharpen < 0.0 {
-            "sharpen must be finite and not negative"
-        } else {
-            return Ok(());
-        };
-        Err(Error::InvalidOptions(problem.to_owned()))
-    }
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            max_width: 440,
-            max_height: 733,
-            jpeg_quality: 92,
-            sharpen: 0.8,
-        }
-    }
-}
 
 /// What [`optimize`] did to the book.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -249,7 +194,6 @@ where
     W: Write + Seek,
     F: FnMut(Progress<'_>),
 {
-    opts.validate()?;
     let mut archive = ZipArchive::new(input).map_err(from_zip)?;
     let mut writer = ZipWriter::new(output);
 
@@ -615,30 +559,6 @@ mod tests {
         let after = read_all(output.get_ref());
         let (_, bytes) = after.iter().find(|(n, _)| n == "OEBPS/style.css").unwrap();
         assert_eq!(bytes, css);
-    }
-
-    #[test]
-    fn rejects_out_of_range_options() {
-        let input = build_epub(&[vec!["a".into()]], None).unwrap();
-        let cases: [fn(&mut Options); 6] = [
-            |o| o.max_width = 0,
-            |o| o.max_height = 0,
-            |o| o.jpeg_quality = 0,
-            |o| o.jpeg_quality = 101,
-            |o| o.sharpen = -1.0,
-            |o| o.sharpen = f32::NAN,
-        ];
-        for change in cases {
-            let mut opts = Options::default();
-            change(&mut opts);
-            let mut output = Cursor::new(Vec::new());
-            let result = optimize(Cursor::new(&input), &mut output, &opts);
-            assert!(
-                matches!(result, Err(Error::InvalidOptions(_))),
-                "{opts:?} gave {result:?}"
-            );
-            assert!(output.get_ref().is_empty(), "nothing written for {opts:?}");
-        }
     }
 
     #[test]
