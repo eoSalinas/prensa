@@ -40,6 +40,9 @@ pub struct Report {
     pub images_changed: usize,
     /// Images kept as they were because rewriting gained nothing.
     pub images_kept: usize,
+    /// Images copied unchanged because they could not be rewritten (failed to
+    /// decode, or too large to read). Each one also has a warning.
+    pub images_failed: usize,
     /// Size of all images before, in bytes (compressed, as stored in the EPUB).
     pub image_bytes_before: u64,
     /// Size of all images after, in bytes (as stored in the EPUB).
@@ -322,10 +325,13 @@ where
                     // Rewriting gained nothing.
                     Ok(None) => report.images_kept += 1,
                     // An image that fails to decode does not fail the book: it stays as it was.
-                    Err(e) => report.warnings.push(Warning {
-                        entry: name.clone(),
-                        message: format!("{e:#}; copied unchanged"),
-                    }),
+                    Err(e) => {
+                        report.images_failed += 1;
+                        report.warnings.push(Warning {
+                            entry: name.clone(),
+                            message: format!("{e:#}; copied unchanged"),
+                        });
+                    }
                 }
                 report.image_bytes_after += size;
                 copy_raw(&mut archive, &mut writer, i)?;
@@ -599,6 +605,7 @@ mod tests {
         };
         assert_eq!(warning.entry, "OEBPS/a.png");
         assert!(warning.message.contains("larger than"), "{warning}");
+        assert_eq!(report.images_failed, 1);
         let after = read_all(output.get_ref());
         assert_eq!(after[1].0, "OEBPS/a.png");
         assert_eq!(after[1].1.len() as u64, MAX_ENTRY_SIZE + 1);
@@ -661,6 +668,8 @@ mod tests {
         assert_eq!(warning.entry, "OEBPS/a.png");
         assert!(warning.message.ends_with("; copied unchanged"), "{warning}");
         assert!(warning.to_string().starts_with("OEBPS/a.png: "));
+        assert_eq!(report.images_failed, 1);
+        assert_eq!(report.images_kept, 0);
     }
 
     #[test]
