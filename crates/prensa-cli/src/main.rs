@@ -103,7 +103,8 @@ fn optimize_file(
         bail!("output must not be the input file");
     }
     let file = File::open(input).with_context(|| format!("opening {}", input.display()))?;
-    let input_bytes = file.metadata()?.len();
+    let input_meta = file.metadata()?;
+    let input_bytes = input_meta.len();
 
     // Atomic write: write to a temp file in the same directory and rename at the end.
     // If anything fails midway, the temp file is deleted and `output` is never half-written.
@@ -114,6 +115,14 @@ fn optimize_file(
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     let report = prensa::optimize_with_progress(BufReader::new(file), &mut tmp, opts, on_progress)?;
     let output_bytes = tmp.as_file().metadata()?.len();
+    // The temp file is created private (0600 on Unix) and `persist` keeps that
+    // mode. Give the output the permissions of the file it replaces, or of the
+    // input for a new file, so other users and services can still read it.
+    let permissions = match std::fs::metadata(output) {
+        Ok(existing) => existing.permissions(),
+        Err(_) => input_meta.permissions(),
+    };
+    tmp.as_file().set_permissions(permissions)?;
     tmp.persist(output)
         .with_context(|| format!("writing {}", output.display()))?;
     Ok(Sizes {
@@ -182,6 +191,53 @@ fn print_summary(output: &Path, sizes: &Sizes) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// A minimal valid EPUB on disk.
+    fn write_epub(path: &Path) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_output_gets_the_input_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (input, output) = (dir.path().join("in.epub"), dir.path().join("out.epub"));
+        write_epub(&input);
+        set_mode(&input, 0o644);
+        optimize_file(&input, &output, &Options::default(), |_| {}).unwrap();
+        assert_eq!(mode(&output), 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replaced_output_keeps_its_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (input, output) = (dir.path().join("in.epub"), dir.path().join("out.epub"));
+        write_epub(&input);
+        set_mode(&input, 0o600);
+        std::fs::write(&output, b"old").unwrap();
+        set_mode(&output, 0o664);
+        optimize_file(&input, &output, &Options::default(), |_| {}).unwrap();
+        assert_eq!(mode(&output), 0o664);
+    }
 
     #[test]
     fn refuses_to_overwrite_input() {
