@@ -100,6 +100,10 @@ pub struct Report {
 }
 
 /// Where [`optimize_with_progress`] is in the book.
+///
+/// Reported before each entry, so `done` goes from `0` to `total - 1`; there is
+/// no call with `done == total`. The book is finished when
+/// [`optimize_with_progress`] returns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Progress<'a> {
@@ -165,6 +169,10 @@ where
 }
 
 /// Like [`optimize`], calling `on_progress` before each entry is processed.
+///
+/// On success it is called exactly once per entry (directories included), in
+/// archive order, with `done` equal to the entry's index. Nothing is called
+/// after the last entry; treat the return of this function as completion.
 ///
 /// The library never prints; front ends use this to draw a progress bar.
 /// Images take most of the time, so progress is not linear in entries.
