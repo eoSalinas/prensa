@@ -687,12 +687,11 @@ mod tests {
         let input = zip_with_zeros("OEBPS/a.png", MAX_ENTRY_SIZE + 1);
         let mut output = Cursor::new(Vec::new());
         let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
-        assert_eq!(report.warnings.len(), 1);
-        assert!(
-            report.warnings[0].contains("larger than"),
-            "{:?}",
-            report.warnings
-        );
+        let [warning] = report.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", report.warnings);
+        };
+        assert_eq!(warning.entry, "OEBPS/a.png");
+        assert!(warning.message.contains("larger than"), "{warning}");
         let after = read_all(output.get_ref());
         assert_eq!(after[1].0, "OEBPS/a.png");
         assert_eq!(after[1].1.len() as u64, MAX_ENTRY_SIZE + 1);
