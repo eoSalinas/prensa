@@ -27,6 +27,9 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// Optimization settings. Start from [`Options::default`] and change what you need.
 ///
+/// [`optimize`] rejects values out of the ranges documented on each field with
+/// [`Error::InvalidOptions`].
+///
 /// The defaults won a side-by-side comparison on an Xteink X4 Pro (CrossPoint):
 /// Q85, Q92, Q92 + sharpening and Q92 + sharpening + 440 px on the same diagram
 /// page; the last one won. 440x733 sits close to the reader viewport (480x800
@@ -35,14 +38,33 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Options {
-    /// Maximum image width, in pixels.
+    /// Maximum image width, in pixels. At least 1.
     pub max_width: u32,
-    /// Maximum image height, in pixels.
+    /// Maximum image height, in pixels. At least 1.
     pub max_height: u32,
     /// JPEG quality, 1-100.
     pub jpeg_quality: u8,
-    /// Unsharp mask sigma applied after downscaling. `0` disables sharpening.
+    /// Unsharp mask sigma applied after downscaling, finite and not negative.
+    /// `0` disables sharpening.
     pub sharpen: f32,
+}
+
+impl Options {
+    /// Check every field against its documented range.
+    fn validate(&self) -> Result<(), Error> {
+        let problem = if self.max_width == 0 {
+            "max_width must be at least 1"
+        } else if self.max_height == 0 {
+            "max_height must be at least 1"
+        } else if !(1..=100).contains(&self.jpeg_quality) {
+            "jpeg_quality must be between 1 and 100"
+        } else if !self.sharpen.is_finite() || self.sharpen < 0.0 {
+            "sharpen must be finite and not negative"
+        } else {
+            return Ok(());
+        };
+        Err(Error::InvalidOptions(problem.to_owned()))
+    }
 }
 
 impl Default for Options {
@@ -94,8 +116,19 @@ enum Action {
     Skip,
     CopyRaw,
     /// `Ok(None)` means the entry is dropped from the output.
-    Rewrite(fn(&str) -> anyhow::Result<Option<String>>),
+    Rewrite(fn(&str) -> anyhow::Result<Option<String>>, NotUtf8),
     Image(images::Kind),
+}
+
+/// What to do with a text entry that is not valid UTF-8.
+enum NotUtf8 {
+    /// Copy it unchanged. Fine when skipping the rewrite leaves the book
+    /// consistent: a leftover `@font-face` points to a missing file, which
+    /// readers already handle by falling back to their own fonts.
+    CopyRaw,
+    /// Fail the book. Copying would list removed fonts in the manifest or in
+    /// `encryption.xml`.
+    Reject,
 }
 
 fn decide(name: &str) -> Action {
@@ -103,11 +136,11 @@ fn decide(name: &str) -> Action {
     if name == "mimetype" || fonts::is_font(name) {
         Action::Skip
     } else if lower.ends_with(".css") {
-        Action::Rewrite(fonts::strip_font_faces)
+        Action::Rewrite(fonts::strip_font_faces, NotUtf8::CopyRaw)
     } else if lower.ends_with(".opf") {
-        Action::Rewrite(fonts::remove_manifest_items)
+        Action::Rewrite(fonts::remove_manifest_items, NotUtf8::Reject)
     } else if lower == "meta-inf/encryption.xml" {
-        Action::Rewrite(fonts::clean_encryption)
+        Action::Rewrite(fonts::clean_encryption, NotUtf8::Reject)
     } else if let Some(kind) = images::kind_of(name) {
         Action::Image(kind)
     } else {
@@ -146,6 +179,7 @@ where
     W: Write + Seek,
     F: FnMut(Progress<'_>),
 {
+    opts.validate()?;
     let mut archive = ZipArchive::new(input).map_err(from_zip)?;
     let mut writer = ZipWriter::new(output);
 
@@ -212,7 +246,7 @@ where
             Action::CopyRaw => writer
                 .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
                 .map_err(from_zip)?,
-            Action::Rewrite(transform) => {
+            Action::Rewrite(transform, not_utf8) => {
                 let mut bytes = Vec::new();
                 archive
                     .by_index(i)
@@ -233,10 +267,17 @@ where
                             writer.write_all(new_text.as_bytes())?;
                         }
                     }
-                    // Not UTF-8: do not risk it, copy unchanged.
-                    Err(_) => writer
-                        .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
-                        .map_err(from_zip)?,
+                    Err(e) => match not_utf8 {
+                        NotUtf8::CopyRaw => writer
+                            .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
+                            .map_err(from_zip)?,
+                        NotUtf8::Reject => {
+                            return Err(Error::Malformed {
+                                entry: name,
+                                source: Box::new(e.utf8_error()),
+                            });
+                        }
+                    },
                 }
             }
             Action::Image(kind) => {
@@ -437,6 +478,78 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         let err = optimize(Cursor::new(b"not a zip"), &mut output, &Options::default());
         assert!(matches!(err, Err(Error::InvalidZip(_))));
+    }
+
+    /// Zip with one deflated entry per `(name, bytes)`, plus a font.
+    fn zip_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in entries.iter().chain([&("OEBPS/f.ttf", &b"font"[..])]) {
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect()
+    }
+
+    #[test]
+    fn rejects_opf_and_encryption_that_are_not_utf8() {
+        let opf = utf16(r#"<package><manifest><item href="f.ttf" id="f"/></manifest></package>"#);
+        let enc = utf16(
+            r#"<encryption><EncryptedData><CipherReference URI="OEBPS/f.ttf"/></EncryptedData></encryption>"#,
+        );
+        for (name, bytes) in [
+            ("OEBPS/content.opf", &opf),
+            ("META-INF/encryption.xml", &enc),
+        ] {
+            let input = zip_with(&[(name, bytes)]);
+            let mut output = Cursor::new(Vec::new());
+            match optimize(Cursor::new(input), &mut output, &Options::default()) {
+                Err(Error::Malformed { entry, .. }) => assert_eq!(entry, name),
+                other => panic!("{name}: expected Malformed, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn copies_css_that_is_not_utf8() {
+        // Latin-1 `é` in a comment: invalid UTF-8.
+        let css = b"/* caf\xe9 */ @font-face { src: url(f.ttf) }";
+        let input = zip_with(&[("OEBPS/style.css", css)]);
+        let mut output = Cursor::new(Vec::new());
+        optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let after = read_all(output.get_ref());
+        let (_, bytes) = after.iter().find(|(n, _)| n == "OEBPS/style.css").unwrap();
+        assert_eq!(bytes, css);
+    }
+
+    #[test]
+    fn rejects_out_of_range_options() {
+        let input = build_epub(&[vec!["a".into()]], None).unwrap();
+        let cases: [fn(&mut Options); 6] = [
+            |o| o.max_width = 0,
+            |o| o.max_height = 0,
+            |o| o.jpeg_quality = 0,
+            |o| o.jpeg_quality = 101,
+            |o| o.sharpen = -1.0,
+            |o| o.sharpen = f32::NAN,
+        ];
+        for change in cases {
+            let mut opts = Options::default();
+            change(&mut opts);
+            let mut output = Cursor::new(Vec::new());
+            let result = optimize(Cursor::new(&input), &mut output, &opts);
+            assert!(
+                matches!(result, Err(Error::InvalidOptions(_))),
+                "{opts:?} gave {result:?}"
+            );
+            assert!(output.get_ref().is_empty(), "nothing written for {opts:?}");
+        }
     }
 
     #[test]

@@ -21,10 +21,10 @@ struct Cli {
     /// Output EPUB
     output: PathBuf,
     /// Maximum image width, in pixels
-    #[arg(long, default_value_t = Options::default().max_width)]
+    #[arg(long, default_value_t = Options::default().max_width, value_parser = clap::value_parser!(u32).range(1..))]
     max_width: u32,
     /// Maximum image height, in pixels
-    #[arg(long, default_value_t = Options::default().max_height)]
+    #[arg(long, default_value_t = Options::default().max_height, value_parser = clap::value_parser!(u32).range(1..))]
     max_height: u32,
     /// JPEG quality (1-100)
     #[arg(long, default_value_t = Options::default().jpeg_quality, value_parser = clap::value_parser!(u8).range(1..=100))]
