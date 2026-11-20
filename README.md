@@ -126,7 +126,7 @@ it. `optimize` works on any `Read + Seek` input and `Write + Seek` output
 
 ```toml
 [dependencies]
-prensa = "0.1"
+prensa = "0.2"
 ```
 
 ```rust
