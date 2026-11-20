@@ -2,8 +2,10 @@
 
 The engine behind the [`prensa`](https://crates.io/crates/prensa-cli) CLI:
 optimize EPUBs for e-ink readers. It removes embedded fonts, fits images to
-the screen in grayscale and rewrites progressive JPEGs as baseline, producing
-a smaller, standard EPUB that is easier on small devices.
+the screen in grayscale, rewrites progressive JPEGs as baseline and converts
+images the reader cannot show (WebP, BMP, images embedded in chapters),
+producing a smaller, standard EPUB that is easier on small devices. Wide
+diagrams can optionally be turned to fill the screen's height.
 
 Defaults are tuned on an Xteink X4 Pro running the CrossPoint firmware. See
 the [repository](https://github.com/eoSalinas/prensa) for before/after photos

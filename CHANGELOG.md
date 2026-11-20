@@ -7,6 +7,66 @@ may break the library API).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+Images the reader could not show now show up, wide diagrams can be turned to
+fill the screen, and the library's `Options` is built through a validating
+builder (breaking).
+
+### Added
+
+- Convert images CrossPoint cannot show: lossy WebP becomes JPEG; lossless
+  WebP and BMP become PNG. GIF becomes PNG when that is smaller or the image
+  has to shrink. A converted image is renamed, never over an existing entry
+  (`fig.webp` next to `fig.png` becomes `fig-1.png`), and every reference to
+  it is updated: `src`, `href`, `xlink:href` and inline `style` in chapters,
+  `url()` in CSS, and `href`/`media-type` in the manifest (#34).
+- Move images embedded in chapters as `data:` URIs into their own entries,
+  listed in the manifest; the same image in several chapters becomes one
+  file (#38).
+- `--device x4|x3` (`x4-pro` and `x4-classic` are aliases of `x4`) and, in the
+  library, `Device` and `OptionsBuilder::device`. The X3 box (484×726) is the
+  X4 box scaled to its screen and has not been compared on a device yet
+  (#35).
+- `--rotate off|cw|ccw`, off by default, and `Rotation`,
+  `OptionsBuilder::rotate` and `no_rotate`: an image that would be shrunk to
+  less than a third of its size upright, and that turning shows at least 30%
+  larger, is turned 90°; its `width`/`height` attributes and inline CSS sizes
+  are dropped in chapters (#37).
+- `Report::images_failed` (#27), `images_converted` (#34), `images_rotated`
+  (#37) and `images_extracted` (#38); the CLI summary shows them.
+- The property test also checks that the element structure of every chapter
+  is unchanged, so reading positions saved by sync services stay valid (#32).
+
+### Changed
+
+- **Breaking:** `Options` is built with `Options::builder()`, which checks
+  every setting at once and returns `InvalidOptions`; its fields are private
+  and it is no longer `Copy` (#12, #22, #25).
+- **Breaking:** `Report::warnings` is a `Vec<Warning>` with the entry each one
+  is about, instead of strings (#23).
+- `--max-width` and `--max-height` default to the box of `--device` and
+  override it one side at a time (#35).
+- CSS, OPF and `encryption.xml` entries with nothing to rewrite are copied as
+  stored instead of being written back (#33).
+- The CLI buffers writes to the output file (#17).
+
+### Fixed
+
+- Progressive JPEGs with fill bytes before the frame header are detected and
+  rewritten as baseline (#13).
+- A book whose OPF or `encryption.xml` is not UTF-8 fails with
+  `Error::Malformed` instead of keeping removed fonts in them (#14).
+- A read error while opening the book is an `Error::Io`, not
+  `Error::InvalidZip` (#15).
+- The CLI writes the output with the usual file permissions instead of
+  `0600` (#16).
+- Entries read into memory are capped at 128 MiB: an oversized text entry
+  fails the book, an oversized image is copied unchanged with a warning
+  (#20).
+- Fonts declared only by their manifest media type are removed (#21).
+- Image warnings are printed once and on one line (#28).
+
 ## [0.1.0]
 
 First release. `prensa` (library) and `prensa-cli` (the `prensa` command)
@@ -29,5 +89,6 @@ share one version.
   the visible text is unchanged (property-tested) and the output is a valid
   EPUB container.
 
-[Unreleased]: https://github.com/eoSalinas/prensa/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/eoSalinas/prensa/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/eoSalinas/prensa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eoSalinas/prensa/releases/tag/v0.1.0

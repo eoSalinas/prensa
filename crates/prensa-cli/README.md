@@ -15,8 +15,10 @@ prensa book.epub book-optimized.epub
 ```
 
 The output is a smaller, standard EPUB: embedded fonts removed, images fitted
-to the screen in grayscale, progressive JPEGs rewritten as baseline. The input
-file is never modified.
+to the screen in grayscale, progressive JPEGs rewritten as baseline, and
+images the reader cannot show (WebP, BMP, images embedded in chapters)
+converted. `--device x4|x3` picks the screen, and `--rotate cw` turns wide
+diagrams to fill its height. The input file is never modified.
 
 Defaults are tuned on an Xteink X4 Pro running the CrossPoint firmware. Run
 `prensa --help` for options, and see the
