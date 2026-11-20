@@ -19,6 +19,7 @@ mod fonts;
 mod images;
 mod options;
 mod passes;
+mod refs;
 mod report;
 
 pub use error::{Error, Source};
@@ -26,8 +27,9 @@ pub use options::{InvalidOptions, Options, OptionsBuilder};
 pub use report::{Progress, Report, Warning};
 
 use error::from_zip;
-use fonts::Fonts;
-use passes::{Action, NotUtf8, Outcome, decide};
+use images::Optimized;
+use passes::{Action, Book, Fallback, Outcome, decide};
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -89,6 +91,34 @@ fn malformed(entry: &str, source: Source) -> Error {
     }
 }
 
+/// What became of an image: rewritten (`Some`), kept because rewriting
+/// gained nothing (`None`), or not readable as an image (`Err`, a warning).
+type ImageResult = anyhow::Result<Option<Optimized>>;
+
+/// Read image entry `i` and run the images pass on it.
+fn optimize_image<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    i: usize,
+    kind: images::Kind,
+    opts: &Options,
+) -> Result<ImageResult, Error> {
+    Ok(match read_entry(archive, i)? {
+        Some(bytes) => images::optimize(kind, &bytes, opts),
+        None => Err(anyhow::anyhow!(too_large())),
+    })
+}
+
+/// A warning for an entry copied unchanged.
+fn copied_unchanged(entry: &str, reason: impl std::fmt::Display) -> Warning {
+    Warning {
+        entry: entry.to_owned(),
+        // `{reason}`, not `{reason:#}`: `image` errors already include their
+        // cause in the message, so the chain would repeat it. Some decoders
+        // end it with a newline; a warning is one line.
+        message: format!("{}; copied unchanged", reason.to_string().trim_end()),
+    }
+}
+
 /// Read an EPUB from `input` and write an optimized copy to `output`.
 ///
 /// Both are taken by value; pass `&mut file` to keep using it afterwards
@@ -144,7 +174,7 @@ where
 
     // Fonts declared in the manifest, so a font without a font extension is
     // removed together with its manifest item and `encryption.xml` entry.
-    let mut fonts = Fonts::default();
+    let mut book = Book::default();
     for (i, (name, _)) in entries.iter().enumerate() {
         if !name.to_ascii_lowercase().ends_with(".opf") {
             continue;
@@ -152,9 +182,27 @@ where
         let bytes =
             read_entry(&mut archive, i)?.ok_or_else(|| malformed(name, too_large().into()))?;
         let opf = std::str::from_utf8(&bytes).map_err(|e| malformed(name, Box::new(e)))?;
-        fonts
+        book.fonts
             .add_manifest(opf, name)
             .map_err(|e| malformed(name, e.into()))?;
+    }
+
+    // Images that may change format (WebP, BMP, GIF) are converted before
+    // anything is written: the new file name has to be known by every entry
+    // that refers to it, and some of those come earlier in the archive.
+    let mut taken: HashSet<String> = entries.iter().map(|(n, _)| n.to_lowercase()).collect();
+    let mut converted: HashMap<usize, ImageResult> = HashMap::new();
+    for (i, (name, _)) in entries.iter().enumerate() {
+        let Some(kind) = images::kind_of(name).filter(|k| k.may_change_format()) else {
+            continue;
+        };
+        let result = optimize_image(&mut archive, i, kind, opts)?;
+        if let Ok(Some(image)) = &result {
+            let format = image.format;
+            book.renames
+                .add(name, format.extension(), format.media_type(), &mut taken);
+        }
+        converted.insert(i, result);
     }
 
     // Files that survive the passes, used to drop directory entries left empty
@@ -163,7 +211,7 @@ where
         .iter()
         .map(|(name, _)| name.as_str())
         .filter(|n| {
-            !n.ends_with('/') && !matches!(decide(n, &fonts), Action::Skip | Action::RemoveFont)
+            !n.ends_with('/') && !matches!(decide(n, &book), Action::Skip | Action::RemoveFont)
         })
         .collect();
 
@@ -183,52 +231,59 @@ where
             continue;
         }
 
-        match decide(name, &fonts) {
+        match decide(name, &book) {
             Action::Skip => {}
             Action::RemoveFont => {
                 report.fonts_removed += 1;
                 report.font_bytes += size;
             }
             Action::CopyRaw => copy_raw(&mut archive, &mut writer, i)?,
-            Action::Rewrite(transform, not_utf8) => {
+            Action::Rewrite(transform, fallback) => {
                 let bytes = read_entry(&mut archive, i)?
                     .ok_or_else(|| malformed(name, too_large().into()))?;
-                match String::from_utf8(bytes) {
-                    Ok(text) => {
-                        // Broken XML aborts everything: no output beats an inconsistent EPUB
-                        // (font removed but still listed in the manifest).
-                        let outcome =
-                            transform(&text, &fonts).map_err(|e| malformed(name, e.into()))?;
-                        match outcome {
-                            Outcome::Keep => copy_raw(&mut archive, &mut writer, i)?,
-                            Outcome::Replace(new_text) => {
-                                writer
-                                    .start_file(name.as_str(), deflated)
-                                    .map_err(from_zip)?;
-                                writer.write_all(new_text.as_bytes())?;
-                            }
-                            Outcome::Drop => {}
-                        }
+                let outcome = match String::from_utf8(bytes) {
+                    Ok(text) => transform(&text, name, &book).map_err(Source::from),
+                    Err(e) => Err(Box::new(e.utf8_error()) as Source),
+                };
+                match (outcome, fallback) {
+                    (Ok(Outcome::Keep), _) => copy_raw(&mut archive, &mut writer, i)?,
+                    (Ok(Outcome::Replace(new_text)), _) => {
+                        writer
+                            .start_file(name.as_str(), deflated)
+                            .map_err(from_zip)?;
+                        writer.write_all(new_text.as_bytes())?;
                     }
-                    Err(e) => match not_utf8 {
-                        NotUtf8::CopyRaw => copy_raw(&mut archive, &mut writer, i)?,
-                        NotUtf8::Reject => return Err(malformed(name, Box::new(e.utf8_error()))),
-                    },
+                    (Ok(Outcome::Drop), _) => {}
+                    (Err(_), Fallback::Copy) => copy_raw(&mut archive, &mut writer, i)?,
+                    (Err(e), Fallback::CopyWithWarning) => {
+                        report.warnings.push(copied_unchanged(
+                            name,
+                            format_args!("{e}; image references in it not updated"),
+                        ));
+                        copy_raw(&mut archive, &mut writer, i)?;
+                    }
+                    // Broken XML aborts everything: no output beats an inconsistent EPUB
+                    // (font removed but still listed in the manifest).
+                    (Err(e), Fallback::Reject) => return Err(malformed(name, e)),
                 }
             }
             Action::Image(kind) => {
                 report.image_bytes_before += size;
-                let result = match read_entry(&mut archive, i)? {
-                    Some(bytes) => images::optimize(kind, &bytes, opts),
-                    None => Err(anyhow::anyhow!(too_large())),
+                let result = match converted.remove(&i) {
+                    Some(result) => result,
+                    None => optimize_image(&mut archive, i, kind, opts)?,
                 };
                 match result {
-                    Ok(Some(new_bytes)) => {
+                    Ok(Some(image)) => {
                         report.images_changed += 1;
-                        report.image_bytes_after += new_bytes.len() as u64;
+                        report.image_bytes_after += image.bytes.len() as u64;
+                        let new_name = book.renames.new_path(name).unwrap_or(name);
+                        if new_name != name {
+                            report.images_converted += 1;
+                        }
                         // JPEG/PNG are already compressed: deflating them again only costs CPU.
-                        writer.start_file(name.as_str(), stored).map_err(from_zip)?;
-                        writer.write_all(&new_bytes)?;
+                        writer.start_file(new_name, stored).map_err(from_zip)?;
+                        writer.write_all(&image.bytes)?;
                         continue;
                     }
                     // Rewriting gained nothing.
@@ -236,13 +291,7 @@ where
                     // An image that fails to decode does not fail the book: it stays as it was.
                     Err(e) => {
                         report.images_failed += 1;
-                        report.warnings.push(Warning {
-                            entry: name.clone(),
-                            // `{e}`, not `{e:#}`: `image` errors already include their
-                            // cause in the message, so the chain would repeat it. Some
-                            // decoders end it with a newline; a warning is one line.
-                            message: format!("{}; copied unchanged", e.to_string().trim_end()),
-                        });
+                        report.warnings.push(copied_unchanged(name, e));
                     }
                 }
                 report.image_bytes_after += size;
@@ -305,8 +354,13 @@ mod tests {
     }
 
     /// Build a minimal EPUB in memory: chapters, optional embedded font + @font-face,
-    /// optional obfuscation entry.
-    fn build_epub(chapters: &[Vec<String>], font: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
+    /// optional obfuscation entry. Every chapter shows `images/figure.webp`,
+    /// also used as a CSS background; the file exists only if `figure` is given.
+    fn build_epub(
+        chapters: &[Vec<String>],
+        font: Option<&[u8]>,
+        figure: Option<&[u8]>,
+    ) -> anyhow::Result<Vec<u8>> {
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         zip.start_file("mimetype", stored)?;
@@ -316,7 +370,13 @@ mod tests {
 
         let mut manifest =
             String::from(r#"<item href="style.css" id="css" media-type="text/css"/>"#);
-        let mut css = String::from("p { margin: 0 }\n");
+        let mut css = String::from("p { margin: 0 }\nh1 { background: url(images/figure.webp) }\n");
+        if let Some(bytes) = figure {
+            manifest
+                .push_str(r#"<item href="images/figure.webp" id="fig" media-type="image/webp"/>"#);
+            zip.start_file("OEBPS/images/figure.webp", stored)?;
+            zip.write_all(bytes)?;
+        }
         if let Some(bytes) = font {
             manifest.push_str(r#"<item href="fonts/f.ttf" id="font" media-type="font/ttf"/>"#);
             css.push_str("@font-face { font-family: \"F\"; src: url(fonts/f.ttf); }\n");
@@ -334,7 +394,7 @@ mod tests {
                 .map(|p| format!("<p>{}</p>", escape(p)))
                 .collect();
             zip.start_file(format!("OEBPS/ch{i}.xhtml"), stored)?;
-            zip.write_all(format!(r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body><div><h1>Chapter {i}</h1>{body}<img src="figure.png" alt=""/></div></body></html>"#).as_bytes())?;
+            zip.write_all(format!(r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body><div><h1>Chapter {i}</h1>{body}<img src="images/figure.webp" alt=""/></div></body></html>"#).as_bytes())?;
         }
         zip.start_file("OEBPS/style.css", stored)?;
         zip.write_all(css.as_bytes())?;
@@ -384,8 +444,10 @@ mod tests {
         fn visible_text_and_structure_are_unchanged(
             chapters in prop::collection::vec(prop::collection::vec("\\PC{0,60}", 0..5), 1..4),
             font in prop::option::of(prop::collection::vec(any::<u8>(), 1..64)),
+            has_figure in any::<bool>(),
         ) {
-            let input = build_epub(&chapters, font.as_deref()).unwrap();
+            let figure = has_figure.then(|| webp(8, 8));
+            let input = build_epub(&chapters, font.as_deref(), figure.as_deref()).unwrap();
             let mut output = Cursor::new(Vec::new());
 
             let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
@@ -402,7 +464,34 @@ mod tests {
             let opf = &after.iter().find(|(n, _)| n.ends_with(".opf")).unwrap().1;
             prop_assert!(!String::from_utf8_lossy(opf).contains("f.ttf"));
             prop_assert_eq!(report.fonts_removed, usize::from(font.is_some()));
+
+            // The images pass: a WebP figure becomes PNG (it is lossless) and
+            // every reference follows it.
+            if has_figure {
+                prop_assert_eq!(report.images_converted, 1);
+                prop_assert!(after.iter().all(|(name, _)| !name.ends_with(".webp")));
+                prop_assert!(after.iter().any(|(name, _)| name == "OEBPS/images/figure.png"));
+                for (name, bytes) in &after {
+                    let text = String::from_utf8_lossy(bytes);
+                    if name.ends_with(".xhtml") || name.ends_with(".css") || name.ends_with(".opf") {
+                        prop_assert!(!text.contains("figure.webp"), "{}", name);
+                        prop_assert!(text.contains("images/figure.png"), "{}", name);
+                    }
+                }
+                prop_assert!(String::from_utf8_lossy(opf).contains(r#"media-type="image/png""#));
+            }
         }
+    }
+
+    /// A lossless WebP (the only kind the `image` crate encodes).
+    fn webp(w: u32, h: u32) -> Vec<u8> {
+        let img =
+            image::RgbImage::from_fn(w, h, |x, y| image::Rgb([x as u8 * 20, y as u8 * 20, 90]));
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::WebP)
+            .unwrap();
+        out
     }
 
     #[test]
@@ -420,7 +509,7 @@ mod tests {
 
     #[test]
     fn reports_progress_for_every_entry() {
-        let input = build_epub(&[vec!["a".into()], vec!["b".into()]], None).unwrap();
+        let input = build_epub(&[vec!["a".into()], vec!["b".into()]], None, None).unwrap();
         let mut seen = Vec::new();
         let mut output = Cursor::new(Vec::new());
         optimize_with_progress(Cursor::new(&input), &mut output, &Options::default(), |p| {
@@ -661,5 +750,99 @@ mod tests {
             Err(Error::Malformed { entry, .. }) => assert_eq!(entry, "OEBPS/content.opf"),
             other => panic!("expected Malformed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn converted_image_does_not_overwrite_an_existing_file() {
+        // `fig.webp` is lossless, so it becomes PNG, but `fig.png` exists.
+        let mut png = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::new(2, 2))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let figure = webp(4, 4);
+        let input = zip_of(&[
+            (
+                "OEBPS/content.opf",
+                br#"<package><manifest><item href="fig.png" id="a" media-type="image/png"/><item href="fig.webp" id="b" media-type="image/webp"/></manifest></package>"#,
+            ),
+            ("OEBPS/fig.png", &png),
+            ("OEBPS/fig.webp", &figure),
+            (
+                "OEBPS/ch.xhtml",
+                br#"<html><body><img src="fig.png"/><img src="fig.webp"/></body></html>"#,
+            ),
+        ]);
+
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let after = read_all(output.get_ref());
+        let get = |n: &str| {
+            after
+                .iter()
+                .find(|(name, _)| name == n)
+                .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+        };
+
+        assert_eq!(report.images_converted, 1);
+        assert!(get("OEBPS/fig.png").is_some());
+        assert!(get("OEBPS/fig-1.png").is_some());
+        assert!(get("OEBPS/fig.webp").is_none());
+        assert_eq!(
+            get("OEBPS/ch.xhtml").unwrap(),
+            r#"<html><body><img src="fig.png"/><img src="fig-1.png"/></body></html>"#
+        );
+        let opf = get("OEBPS/content.opf").unwrap();
+        assert!(
+            opf.contains(r#"<item href="fig.png" id="a" media-type="image/png"/>"#),
+            "{opf}"
+        );
+        assert!(
+            opf.contains(r#"<item href="fig-1.png" id="b" media-type="image/png"/>"#),
+            "{opf}"
+        );
+    }
+
+    #[test]
+    fn undecodable_webp_keeps_its_name_and_references() {
+        let xhtml: &[u8] = br#"<html><body><img src="a.webp"/></body></html>"#;
+        let input = zip_of(&[("OEBPS/a.webp", b"not a webp"), ("OEBPS/ch.xhtml", xhtml)]);
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let after = read_all(output.get_ref());
+        assert_eq!(report.images_failed, 1);
+        assert_eq!(report.images_converted, 0);
+        assert!(after.iter().any(|(n, _)| n == "OEBPS/a.webp"));
+        assert!(
+            after
+                .iter()
+                .any(|(n, b)| n == "OEBPS/ch.xhtml" && b == xhtml)
+        );
+    }
+
+    #[test]
+    fn broken_chapter_is_copied_with_a_warning() {
+        // An unterminated tag: not even attributes can be read.
+        let broken: &[u8] = br#"<html><body><p><img src="a.webp"</p></body></html>"#;
+        let figure = webp(4, 4);
+        let input = zip_of(&[("OEBPS/a.webp", &figure), ("OEBPS/ch.xhtml", broken)]);
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let after = read_all(output.get_ref());
+
+        assert!(
+            after
+                .iter()
+                .any(|(n, b)| n == "OEBPS/ch.xhtml" && b == broken)
+        );
+        let [warning] = report.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", report.warnings);
+        };
+        assert_eq!(warning.entry, "OEBPS/ch.xhtml");
+        assert!(
+            warning
+                .message
+                .ends_with("image references in it not updated; copied unchanged"),
+            "{warning}"
+        );
     }
 }

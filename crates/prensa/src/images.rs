@@ -4,6 +4,9 @@
 //! - convert to grayscale (e-ink shows no color), flattening transparency onto white;
 //! - JPEG output is always baseline: CrossPoint decodes progressive JPEG at 1/8
 //!   resolution, so the image comes out blurry;
+//! - formats CrossPoint cannot decode (WebP, BMP) become JPEG or PNG, and GIF
+//!   becomes PNG when that is smaller or the image must shrink. The caller
+//!   renames the file, since the reader picks a decoder from the extension;
 //! - never makes things worse: if the result is larger and the image did not
 //!   *need* to change, the original is kept.
 
@@ -15,21 +18,105 @@ use image::{DynamicImage, ExtendedColorType, GrayImage, ImageEncoder, ImageForma
 
 use crate::Options;
 
+/// Format of an image entry, from its extension.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Kind {
     Jpeg,
     Png,
+    Gif,
+    Bmp,
+    Webp,
+}
+
+/// Format an image is written in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Format {
+    Jpeg,
+    Png,
+}
+
+impl Format {
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Format::Jpeg => "jpg",
+            Format::Png => "png",
+        }
+    }
+
+    pub(crate) fn media_type(self) -> &'static str {
+        match self {
+            Format::Jpeg => "image/jpeg",
+            Format::Png => "image/png",
+        }
+    }
 }
 
 pub(crate) fn kind_of(name: &str) -> Option<Kind> {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        Some(Kind::Jpeg)
-    } else if lower.ends_with(".png") {
-        Some(Kind::Png)
-    } else {
-        None
+    let (_, ext) = name.rsplit_once('.')?;
+    match ext.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => Some(Kind::Jpeg),
+        "png" => Some(Kind::Png),
+        "gif" => Some(Kind::Gif),
+        "bmp" => Some(Kind::Bmp),
+        "webp" => Some(Kind::Webp),
+        _ => None,
     }
+}
+
+impl Kind {
+    /// Whether the output can have another format, so the file may be renamed.
+    pub(crate) fn may_change_format(self) -> bool {
+        !matches!(self, Kind::Jpeg | Kind::Png)
+    }
+
+    /// CrossPoint has decoders for JPEG, PNG and GIF only; other formats are
+    /// left out of the page, so they must be converted.
+    fn device_decodes(self) -> bool {
+        matches!(self, Kind::Jpeg | Kind::Png | Kind::Gif)
+    }
+
+    fn image_format(self) -> ImageFormat {
+        match self {
+            Kind::Jpeg => ImageFormat::Jpeg,
+            Kind::Png => ImageFormat::Png,
+            Kind::Gif => ImageFormat::Gif,
+            Kind::Bmp => ImageFormat::Bmp,
+            Kind::Webp => ImageFormat::WebP,
+        }
+    }
+}
+
+/// Output format: JPEG stays JPEG and PNG stays PNG. Lossless sources (BMP,
+/// GIF, lossless WebP) become PNG, so diagrams and text keep sharp edges;
+/// lossy WebP, usually a photo, becomes JPEG.
+fn output_format(kind: Kind, data: &[u8]) -> Format {
+    match kind {
+        Kind::Jpeg => Format::Jpeg,
+        Kind::Png | Kind::Gif | Kind::Bmp => Format::Png,
+        Kind::Webp if is_lossless_webp(data) => Format::Png,
+        Kind::Webp => Format::Jpeg,
+    }
+}
+
+/// Whether a WebP file holds a lossless (`VP8L`) image rather than a lossy
+/// (`VP8 `) one. Walks the RIFF chunks after the 12-byte header; an extended
+/// file (`VP8X`) has the image chunk further on.
+fn is_lossless_webp(data: &[u8]) -> bool {
+    let mut i = 12;
+    while let Some(header) = data.get(i..i + 8) {
+        match &header[..4] {
+            b"VP8L" => return true,
+            b"VP8 " => return false,
+            _ => {}
+        }
+        let size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        // Chunks are padded to an even size.
+        i = i
+            .saturating_add(8)
+            .saturating_add(size)
+            .saturating_add(size & 1);
+    }
+    false
 }
 
 /// Look for the frame header (SOF) and report whether it is progressive.
@@ -95,18 +182,18 @@ fn to_screen_gray(img: &DynamicImage, opts: &Options) -> GrayImage {
     }
 }
 
-fn encode(kind: Kind, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
+fn encode(format: Format, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let (w, h) = img.dimensions();
-    match kind {
+    match format {
         // The `image` crate's JPEG encoder only emits baseline.
-        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality()).write_image(
+        Format::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality()).write_image(
             img.as_raw(),
             w,
             h,
             ExtendedColorType::L8,
         )?,
-        Kind::Png => {
+        Format::Png => {
             PngEncoder::new_with_quality(&mut out, CompressionType::Best, PngFilter::Adaptive)
                 .write_image(img.as_raw(), w, h, ExtendedColorType::L8)?
         }
@@ -114,23 +201,28 @@ fn encode(kind: Kind, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// A rewritten image and the format it is now in.
+#[derive(Debug)]
+pub(crate) struct Optimized {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) format: Format,
+}
+
 /// Returns `Ok(None)` when the original should be kept as-is.
-pub(crate) fn optimize(kind: Kind, data: &[u8], opts: &Options) -> Result<Option<Vec<u8>>> {
-    let format = match kind {
-        Kind::Jpeg => ImageFormat::Jpeg,
-        Kind::Png => ImageFormat::Png,
-    };
-    let img = image::load_from_memory_with_format(data, format)?;
+pub(crate) fn optimize(kind: Kind, data: &[u8], opts: &Options) -> Result<Option<Optimized>> {
+    let img = image::load_from_memory_with_format(data, kind.image_format())?;
+    let format = output_format(kind, data);
 
     // Cases where the change is required even if the file grows.
     let too_big = img.width() > opts.max_width() || img.height() > opts.max_height();
     let progressive = kind == Kind::Jpeg && is_progressive_jpeg(data);
+    let must_change = too_big || progressive || !kind.device_decodes();
 
-    let out = encode(kind, &to_screen_gray(&img, opts), opts)?;
-    if out.len() >= data.len() && !too_big && !progressive {
+    let bytes = encode(format, &to_screen_gray(&img, opts), opts)?;
+    if bytes.len() >= data.len() && !must_change {
         return Ok(None);
     }
-    Ok(Some(out))
+    Ok(Some(Optimized { bytes, format }))
 }
 
 #[cfg(test)]
@@ -159,6 +251,8 @@ mod tests {
         let out = optimize(Kind::Jpeg, &colorful_jpeg(2000, 1000), &Options::default())
             .unwrap()
             .unwrap();
+        assert_eq!(out.format, Format::Jpeg);
+        let out = out.bytes;
         let img = decode(&out);
         assert_eq!((img.width(), img.height()), (440, 220));
         assert!(!img.color().has_color());
@@ -191,7 +285,7 @@ mod tests {
         let out = optimize(Kind::Png, &png, &Options::default())
             .unwrap()
             .unwrap();
-        let gray = decode(&out).to_luma8();
+        let gray = decode(&out.bytes).to_luma8();
         assert!(gray.pixels().all(|p| p.0[0] == 255));
     }
 
@@ -242,6 +336,114 @@ mod tests {
     fn kind_from_name() {
         assert_eq!(kind_of("a/B.JPEG"), Some(Kind::Jpeg));
         assert_eq!(kind_of("x.png"), Some(Kind::Png));
+        assert_eq!(kind_of("x.GIF"), Some(Kind::Gif));
+        assert_eq!(kind_of("x.bmp"), Some(Kind::Bmp));
+        assert_eq!(kind_of("x.webp"), Some(Kind::Webp));
         assert_eq!(kind_of("x.svg"), None);
+        assert_eq!(kind_of("webp"), None);
+    }
+
+    fn encoded(img: DynamicImage, format: ImageFormat) -> Vec<u8> {
+        let mut out = Vec::new();
+        img.write_to(&mut Cursor::new(&mut out), format).unwrap();
+        out
+    }
+
+    fn colorful(w: u32, h: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, ((x * y) % 256) as u8])
+        }))
+    }
+
+    #[test]
+    fn bmp_becomes_png_even_when_small() {
+        // A tiny BMP: the PNG may not be smaller, but CrossPoint cannot show BMP.
+        let bmp = encoded(colorful(4, 4), ImageFormat::Bmp);
+        let out = optimize(Kind::Bmp, &bmp, &Options::default())
+            .unwrap()
+            .expect("converted");
+        assert_eq!(out.format, Format::Png);
+        let img = decode(&out.bytes);
+        assert_eq!((img.width(), img.height()), (4, 4));
+        assert!(!img.color().has_color());
+    }
+
+    #[test]
+    fn lossless_webp_becomes_png() {
+        // The `image` crate only encodes lossless WebP.
+        let webp = encoded(colorful(600, 300), ImageFormat::WebP);
+        assert!(is_lossless_webp(&webp));
+        let out = optimize(Kind::Webp, &webp, &Options::default())
+            .unwrap()
+            .expect("converted");
+        assert_eq!(out.format, Format::Png);
+        assert_eq!(decode(&out.bytes).width(), 440);
+    }
+
+    #[test]
+    fn large_gif_becomes_a_smaller_png() {
+        let gif = encoded(colorful(1000, 500), ImageFormat::Gif);
+        let out = optimize(Kind::Gif, &gif, &Options::default())
+            .unwrap()
+            .expect("too big for the screen");
+        assert_eq!(out.format, Format::Png);
+        assert_eq!(decode(&out.bytes).width(), 440);
+    }
+
+    #[test]
+    fn small_gif_that_does_not_shrink_is_kept() {
+        // One color: GIF's LZW beats PNG at this size. CrossPoint decodes GIF.
+        let gif = encoded(
+            DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([0, 0, 0]))),
+            ImageFormat::Gif,
+        );
+        let png_len = encode(
+            Format::Png,
+            &GrayImage::from_pixel(2, 2, Luma([0])),
+            &Options::default(),
+        )
+        .unwrap()
+        .len();
+        assert!(
+            png_len >= gif.len(),
+            "precondition: PNG {png_len} >= GIF {}",
+            gif.len()
+        );
+        assert!(
+            optimize(Kind::Gif, &gif, &Options::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// RIFF/WEBP header followed by chunks given as (fourcc, payload length).
+    fn webp_chunks(chunks: &[(&[u8; 4], usize)]) -> Vec<u8> {
+        let mut data = b"RIFF\0\0\0\0WEBP".to_vec();
+        for (fourcc, len) in chunks {
+            data.extend_from_slice(*fourcc);
+            data.extend_from_slice(&(*len as u32).to_le_bytes());
+            data.extend(std::iter::repeat_n(0, len + len % 2));
+        }
+        data
+    }
+
+    #[test]
+    fn tells_lossy_from_lossless_webp() {
+        assert!(!is_lossless_webp(&webp_chunks(&[(b"VP8 ", 10)])));
+        assert!(is_lossless_webp(&webp_chunks(&[(b"VP8L", 10)])));
+        // Extended: VP8X, then an odd-sized chunk (padded), then the image.
+        assert!(is_lossless_webp(&webp_chunks(&[
+            (b"VP8X", 10),
+            (b"ICCP", 3),
+            (b"VP8L", 5)
+        ])));
+        assert!(!is_lossless_webp(&webp_chunks(&[
+            (b"VP8X", 10),
+            (b"ALPH", 7),
+            (b"VP8 ", 5)
+        ])));
+        // Truncated or empty: treated as lossy.
+        assert!(!is_lossless_webp(b"RIFF"));
+        assert_eq!(output_format(Kind::Webp, b"RIFF"), Format::Jpeg);
     }
 }

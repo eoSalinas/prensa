@@ -74,16 +74,24 @@ An EPUB is a zip archive. `prensa::optimize` reads it entry by entry and
 
 - **Skip**: drop the entry (embedded fonts; `mimetype` is rewritten first)
 - **CopyRaw**: copy the compressed bytes untouched (most of the book)
-- **Rewrite**: change a text file (CSS, the OPF manifest, `encryption.xml`).
-  A rewrite that finds nothing to change returns `Outcome::Keep` and the
-  entry is copied untouched, like CopyRaw
-- **Image**: fit a JPEG or PNG to the screen
+- **Rewrite**: change a text file (CSS, the OPF manifest, `encryption.xml`,
+  and chapters when an image was renamed). A rewrite that finds nothing to
+  change returns `Outcome::Keep` and the entry is copied untouched, like
+  CopyRaw
+- **Image**: fit an image to the screen
 
 The work is split into passes, one module each:
 
 - `fonts.rs`: removes embedded fonts and every reference to them
 - `images.rs`: downscales, converts to grayscale, rewrites progressive JPEGs as
-  baseline, and keeps the original when rewriting gains nothing
+  baseline, converts formats the reader cannot show (WebP, BMP), and keeps the
+  original when rewriting gains nothing
+- `refs.rs`: resolves `href`s to zip paths and updates references to renamed
+  images, replacing attribute values in place so the rest of each file is
+  kept byte for byte
+
+Images that may be renamed are converted before anything is written, since
+the entries referring to them can come earlier in the archive.
 
 A new optimization usually means a new action in `decide()` or a change inside
 one pass.

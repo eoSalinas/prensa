@@ -13,6 +13,11 @@ pub struct Report {
     pub font_bytes: u64,
     /// Images rewritten.
     pub images_changed: usize,
+    /// Images converted to another format, because the reader cannot decode
+    /// theirs (WebP, BMP) or because it is smaller (GIF to PNG). Counted in
+    /// `images_changed` too. The file is renamed (`fig.webp` becomes
+    /// `fig.jpg`) and every reference to it updated.
+    pub images_converted: usize,
     /// Images kept as they were because rewriting gained nothing.
     pub images_kept: usize,
     /// Images copied unchanged because they could not be rewritten (failed to
