@@ -9,7 +9,7 @@ use console::{Term, style};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use prensa::{Options, Progress, Report};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 /// Optimize EPUBs for e-ink readers. Writes a copy; the input is never modified.
@@ -113,7 +113,12 @@ fn optimize_file(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    let report = prensa::optimize_with_progress(BufReader::new(file), &mut tmp, opts, on_progress)?;
+    // `ZipWriter` issues many small writes (local headers, the central
+    // directory); buffer them instead of making a syscall for each.
+    let mut out = BufWriter::new(tmp.as_file_mut());
+    let report = prensa::optimize_with_progress(BufReader::new(file), &mut out, opts, on_progress)?;
+    out.flush()?;
+    drop(out);
     let output_bytes = tmp.as_file().metadata()?.len();
     // The temp file is created private (0600 on Unix) and `persist` keeps that
     // mode. Give the output the permissions of the file it replaces, or of the
