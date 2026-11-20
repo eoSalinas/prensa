@@ -7,6 +7,7 @@
 //! - references in `META-INF/encryption.xml` (font obfuscation, XML);
 //! - `@font-face` blocks in CSS (regex: `@font-face` never has nested braces).
 
+use crate::passes::Outcome;
 use anyhow::{Result, bail};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer, XmlVersion};
@@ -117,8 +118,11 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
 }
 
-pub fn strip_font_faces(css: &str, _fonts: &Fonts) -> Result<Option<String>> {
-    Ok(Some(FONT_FACE.replace_all(css, "").into_owned()))
+pub fn strip_font_faces(css: &str, _fonts: &Fonts) -> Result<Outcome> {
+    Ok(match FONT_FACE.replace_all(css, "") {
+        std::borrow::Cow::Borrowed(_) => Outcome::Keep,
+        std::borrow::Cow::Owned(css) => Outcome::Replace(css),
+    })
 }
 
 /// A manifest `<item>` is a font if its `href` has a font extension
@@ -142,30 +146,36 @@ fn is_font_item(e: &BytesStart) -> Result<bool> {
 }
 
 /// Remove font items from the manifest. Everything else in the OPF passes through untouched.
-pub fn remove_manifest_items(opf: &str, _fonts: &Fonts) -> Result<Option<String>> {
+pub fn remove_manifest_items(opf: &str, _fonts: &Fonts) -> Result<Outcome> {
     let mut reader = Reader::from_str(opf);
     let mut writer = Writer::new(Vec::new());
+    let mut removed = false;
     loop {
         match reader.read_event()? {
             Event::Eof => break,
             // `<item .../>`: just skip it.
-            Event::Empty(e) if is_font_item(&e)? => {}
+            Event::Empty(e) if is_font_item(&e)? => removed = true,
             // `<item ...></item>`: skip up to the closing tag.
             Event::Start(e) if is_font_item(&e)? => {
                 reader.read_to_end(e.name())?;
+                removed = true;
             }
             event => writer.write_event(event)?,
         }
     }
-    Ok(Some(String::from_utf8(writer.into_inner())?))
+    if !removed {
+        return Ok(Outcome::Keep);
+    }
+    Ok(Outcome::Replace(String::from_utf8(writer.into_inner())?))
 }
 
 /// Remove `<EncryptedData>` blocks that point to fonts.
-/// Returns `None` when no block is left, meaning the file can be dropped.
-pub fn clean_encryption(xml: &str, fonts: &Fonts) -> Result<Option<String>> {
+/// [`Outcome::Drop`] when no block is left: the file is no longer needed.
+pub fn clean_encryption(xml: &str, fonts: &Fonts) -> Result<Outcome> {
     let mut reader = Reader::from_str(xml);
     let mut writer = Writer::new(Vec::new());
     let mut kept = 0;
+    let mut removed = 0;
     loop {
         match reader.read_event()? {
             Event::Eof => break,
@@ -196,7 +206,9 @@ pub fn clean_encryption(xml: &str, fonts: &Fonts) -> Result<Option<String>> {
                         break;
                     }
                 }
-                if !points_to_font {
+                if points_to_font {
+                    removed += 1;
+                } else {
                     kept += 1;
                     for event in block {
                         writer.write_event(event)?;
@@ -206,15 +218,26 @@ pub fn clean_encryption(xml: &str, fonts: &Fonts) -> Result<Option<String>> {
             event => writer.write_event(event)?,
         }
     }
-    if kept == 0 {
-        return Ok(None);
-    }
-    Ok(Some(String::from_utf8(writer.into_inner())?))
+    Ok(if kept == 0 {
+        Outcome::Drop
+    } else if removed == 0 {
+        Outcome::Keep
+    } else {
+        Outcome::Replace(String::from_utf8(writer.into_inner())?)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The new text of a rewrite that changed something.
+    fn replaced(outcome: Outcome) -> String {
+        match outcome {
+            Outcome::Replace(text) => text,
+            other => panic!("expected Replace, got {other:?}"),
+        }
+    }
 
     #[test]
     fn detects_fonts_case_insensitively() {
@@ -227,7 +250,7 @@ mod tests {
     #[test]
     fn strips_font_face_and_keeps_the_rest() {
         let css = "body { margin: 0 }\n@font-face {\n  font-family: \"Charis\";\n  src: url(x.ttf);\n}\np { color: red }";
-        let out = strip_font_faces(css, &Fonts::default()).unwrap().unwrap();
+        let out = replaced(strip_font_faces(css, &Fonts::default()).unwrap());
         assert_eq!(out, "body { margin: 0 }\n\np { color: red }");
     }
 
@@ -239,9 +262,7 @@ mod tests {
 <item href="no-extension" id="g" media-type="font/ttf"></item>
 <item href="img.png" id="i" media-type="image/png"/>
 </manifest></package>"#;
-        let out = remove_manifest_items(opf, &Fonts::default())
-            .unwrap()
-            .unwrap();
+        let out = replaced(remove_manifest_items(opf, &Fonts::default()).unwrap());
         assert!(!out.contains("Font.otf") && !out.contains("no-extension"));
         assert!(out.contains(r#"<item href="a.css" id="c" media-type="text/css"/>"#));
         assert!(out.contains(r#"<item href="img.png" id="i" media-type="image/png"/>"#));
@@ -249,13 +270,19 @@ mod tests {
     }
 
     #[test]
-    fn opf_without_fonts_is_unchanged() {
+    fn opf_without_fonts_is_kept() {
         let opf = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<package version=\"3.0\">\n  <metadata><dc:title>A &amp; B</dc:title></metadata>\n  <manifest><item href=\"a.xhtml\" id=\"a\" media-type=\"application/xhtml+xml\"/></manifest>\n</package>";
         assert_eq!(
-            remove_manifest_items(opf, &Fonts::default())
-                .unwrap()
-                .unwrap(),
-            opf
+            remove_manifest_items(opf, &Fonts::default()).unwrap(),
+            Outcome::Keep
+        );
+    }
+
+    #[test]
+    fn css_without_font_face_is_kept() {
+        assert_eq!(
+            strip_font_faces("p { margin: 0 }", &Fonts::default()).unwrap(),
+            Outcome::Keep
         );
     }
 
@@ -263,18 +290,28 @@ mod tests {
     fn encryption_with_only_fonts_is_dropped() {
         let xml = r#"<encryption xmlns:enc="x"><enc:EncryptedData><enc:CipherData>
 <enc:CipherReference URI="fonts/00001.ttf"/></enc:CipherData></enc:EncryptedData></encryption>"#;
-        assert_eq!(clean_encryption(xml, &Fonts::default()).unwrap(), None);
+        assert_eq!(
+            clean_encryption(xml, &Fonts::default()).unwrap(),
+            Outcome::Drop
+        );
     }
 
     #[test]
     fn encryption_with_other_entries_is_kept() {
         let xml = r#"<encryption><EncryptedData><CipherReference URI="a.ttf"/></EncryptedData><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#;
-        let out = clean_encryption(xml, &Fonts::default())
-            .unwrap()
-            .expect("still has encrypted content");
+        let out = replaced(clean_encryption(xml, &Fonts::default()).unwrap());
         assert_eq!(
             out,
             r#"<encryption><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#
+        );
+    }
+
+    #[test]
+    fn encryption_without_fonts_is_kept() {
+        let xml = r#"<encryption><EncryptedData><CipherReference URI="ch01.xhtml"/></EncryptedData></encryption>"#;
+        assert_eq!(
+            clean_encryption(xml, &Fonts::default()).unwrap(),
+            Outcome::Keep
         );
     }
 
@@ -311,7 +348,7 @@ mod tests {
             )
             .unwrap();
         let xml = r#"<encryption><EncryptedData><CipherReference URI="OEBPS/f0001"/></EncryptedData></encryption>"#;
-        assert_eq!(clean_encryption(xml, &fonts).unwrap(), None);
+        assert_eq!(clean_encryption(xml, &fonts).unwrap(), Outcome::Drop);
     }
 
     #[test]

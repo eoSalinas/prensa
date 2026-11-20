@@ -70,11 +70,13 @@ The repository is a Cargo workspace with two crates:
 | `prensa-cli` | `crates/prensa-cli` | The `prensa` command: paths, atomic writes, progress bar, summary |
 
 An EPUB is a zip archive. `prensa::optimize` reads it entry by entry and
-`decide()` in `crates/prensa/src/lib.rs` picks an action for each one:
+`decide()` in `crates/prensa/src/passes.rs` picks an action for each one:
 
 - **Skip**: drop the entry (embedded fonts; `mimetype` is rewritten first)
 - **CopyRaw**: copy the compressed bytes untouched (most of the book)
-- **Rewrite**: change a text file (CSS, the OPF manifest, `encryption.xml`)
+- **Rewrite**: change a text file (CSS, the OPF manifest, `encryption.xml`).
+  A rewrite that finds nothing to change returns `Outcome::Keep` and the
+  entry is copied untouched, like CopyRaw
 - **Image**: fit a JPEG or PNG to the screen
 
 The work is split into passes, one module each:

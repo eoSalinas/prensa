@@ -18,6 +18,7 @@ mod error;
 mod fonts;
 mod images;
 mod options;
+mod passes;
 mod report;
 
 pub use error::{Error, Source};
@@ -26,6 +27,7 @@ pub use report::{Progress, Report, Warning};
 
 use error::from_zip;
 use fonts::Fonts;
+use passes::{Action, NotUtf8, Outcome, decide};
 use std::io::{Read, Seek, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -84,48 +86,6 @@ fn malformed(entry: &str, source: Source) -> Error {
     Error::Malformed {
         entry: entry.to_owned(),
         source,
-    }
-}
-
-/// What to do with each zip entry.
-enum Action {
-    /// Already written (`mimetype`, written first).
-    Skip,
-    /// Dropped and counted in the report.
-    RemoveFont,
-    CopyRaw,
-    /// `Ok(None)` means the entry is dropped from the output.
-    Rewrite(fn(&str, &Fonts) -> anyhow::Result<Option<String>>, NotUtf8),
-    Image(images::Kind),
-}
-
-/// What to do with a text entry that is not valid UTF-8.
-enum NotUtf8 {
-    /// Copy it unchanged. Fine when skipping the rewrite leaves the book
-    /// consistent: a leftover `@font-face` points to a missing file, which
-    /// readers already handle by falling back to their own fonts.
-    CopyRaw,
-    /// Fail the book. Copying would list removed fonts in the manifest or in
-    /// `encryption.xml`.
-    Reject,
-}
-
-fn decide(name: &str, fonts: &Fonts) -> Action {
-    let lower = name.to_ascii_lowercase();
-    if name == "mimetype" {
-        Action::Skip
-    } else if fonts.contains(name) {
-        Action::RemoveFont
-    } else if lower.ends_with(".css") {
-        Action::Rewrite(fonts::strip_font_faces, NotUtf8::CopyRaw)
-    } else if lower.ends_with(".opf") {
-        Action::Rewrite(fonts::remove_manifest_items, NotUtf8::Reject)
-    } else if lower == "meta-inf/encryption.xml" {
-        Action::Rewrite(fonts::clean_encryption, NotUtf8::Reject)
-    } else if let Some(kind) = images::kind_of(name) {
-        Action::Image(kind)
-    } else {
-        Action::CopyRaw
     }
 }
 
@@ -237,13 +197,17 @@ where
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
                         // (font removed but still listed in the manifest).
-                        let result =
+                        let outcome =
                             transform(&text, &fonts).map_err(|e| malformed(name, e.into()))?;
-                        if let Some(new_text) = result {
-                            writer
-                                .start_file(name.as_str(), deflated)
-                                .map_err(from_zip)?;
-                            writer.write_all(new_text.as_bytes())?;
+                        match outcome {
+                            Outcome::Keep => copy_raw(&mut archive, &mut writer, i)?,
+                            Outcome::Replace(new_text) => {
+                                writer
+                                    .start_file(name.as_str(), deflated)
+                                    .map_err(from_zip)?;
+                                writer.write_all(new_text.as_bytes())?;
+                            }
+                            Outcome::Drop => {}
                         }
                     }
                     Err(e) => match not_utf8 {
@@ -519,6 +483,34 @@ mod tests {
                 Err(Error::Malformed { entry, .. }) => assert_eq!(entry, name),
                 other => panic!("{name}: expected Malformed, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn unchanged_text_entries_are_copied_as_stored() {
+        // No @font-face, no font items: nothing to rewrite. Stored (not
+        // deflated) in the input, so a rewrite would show up as deflated.
+        let css: &[u8] = b"p { margin: 0 }";
+        let opf: &[u8] =
+            br#"<package><manifest><item href="ch.xhtml" id="c"/></manifest></package>"#;
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, bytes) in [("OEBPS/style.css", css), ("OEBPS/content.opf", opf)] {
+            zip.start_file(name, stored).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let input = zip.finish().unwrap().into_inner();
+
+        let mut output = Cursor::new(Vec::new());
+        optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+
+        let mut archive = ZipArchive::new(Cursor::new(output.into_inner())).unwrap();
+        for (name, bytes) in [("OEBPS/style.css", css), ("OEBPS/content.opf", opf)] {
+            let mut entry = archive.by_name(name).unwrap();
+            assert_eq!(entry.compression(), CompressionMethod::Stored, "{name}");
+            let mut out = Vec::new();
+            entry.read_to_end(&mut out).unwrap();
+            assert_eq!(out, bytes, "{name}");
         }
     }
 
