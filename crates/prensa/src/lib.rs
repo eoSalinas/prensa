@@ -117,6 +117,28 @@ fn too_large() -> String {
     )
 }
 
+/// Copy entry `i` as stored in the input, without decompressing and
+/// recompressing it.
+fn copy_raw<R, W>(
+    archive: &mut ZipArchive<R>,
+    writer: &mut ZipWriter<W>,
+    i: usize,
+) -> Result<(), Error>
+where
+    R: Read + Seek,
+    W: Write + Seek,
+{
+    let entry = archive.by_index_raw(i).map_err(from_zip)?;
+    writer.raw_copy_file(entry).map_err(from_zip)
+}
+
+fn malformed(entry: &str, source: Source) -> Error {
+    Error::Malformed {
+        entry: entry.to_owned(),
+        source,
+    }
+}
+
 /// What to do with each zip entry.
 enum Action {
     /// Already written (`mimetype`, written first).
@@ -202,97 +224,73 @@ where
     writer.start_file("mimetype", stored).map_err(from_zip)?;
     writer.write_all(b"application/epub+zip")?;
 
-    // Files that survive the passes, used to drop directory entries left empty
-    // (e.g. `fonts/` after removing the fonts inside it).
-    let names = (0..archive.len())
+    // Name and size of every entry. Sizes in the report are as stored in the
+    // EPUB (compressed), so they add up with the file size on disk.
+    let entries = (0..archive.len())
         .map(|i| {
-            Ok(archive
-                .by_index_raw(i)
-                .map_err(from_zip)?
-                .name()
-                .map_err(from_zip)?
-                .into_owned())
+            let entry = archive.by_index_raw(i).map_err(from_zip)?;
+            let name = entry.name().map_err(from_zip)?.into_owned();
+            Ok((name, entry.compressed_size()))
         })
-        .collect::<Result<Vec<String>, Error>>()?;
+        .collect::<Result<Vec<(String, u64)>, Error>>()?;
 
     // Fonts declared in the manifest, so a font without a font extension is
     // removed together with its manifest item and `encryption.xml` entry.
     let mut fonts = Fonts::default();
-    for (i, name) in names.iter().enumerate() {
+    for (i, (name, _)) in entries.iter().enumerate() {
         if !name.to_ascii_lowercase().ends_with(".opf") {
             continue;
         }
-        let malformed = |source: Source| Error::Malformed {
-            entry: name.clone(),
-            source,
-        };
-        let bytes = read_entry(&mut archive, i)?.ok_or_else(|| malformed(too_large().into()))?;
-        let opf = std::str::from_utf8(&bytes).map_err(|e| malformed(Box::new(e)))?;
+        let bytes =
+            read_entry(&mut archive, i)?.ok_or_else(|| malformed(name, too_large().into()))?;
+        let opf = std::str::from_utf8(&bytes).map_err(|e| malformed(name, Box::new(e)))?;
         fonts
             .add_manifest(opf, name)
-            .map_err(|e| malformed(e.into()))?;
+            .map_err(|e| malformed(name, e.into()))?;
     }
 
-    let kept_files: Vec<&str> = names
+    // Files that survive the passes, used to drop directory entries left empty
+    // (e.g. `fonts/` after removing the fonts inside it).
+    let kept_files: Vec<&str> = entries
         .iter()
+        .map(|(name, _)| name.as_str())
         .filter(|n| {
             !n.ends_with('/') && !matches!(decide(n, &fonts), Action::Skip | Action::RemoveFont)
         })
-        .map(String::as_str)
         .collect();
 
     let mut report = Report::default();
-    let total = archive.len();
-    for i in 0..total {
-        // `by_index_raw` borrows `archive` mutably: one entry at a time.
-        // `into_owned` copies the name so the borrow ends here.
-        // Sizes in the report are as stored in the EPUB (compressed), so they
-        // add up with the file size on disk.
-        let (name, size) = {
-            let entry = archive.by_index_raw(i).map_err(from_zip)?;
-            (
-                entry.name().map_err(from_zip)?.into_owned(),
-                entry.compressed_size(),
-            )
-        };
+    let total = entries.len();
+    for (i, (name, size)) in entries.iter().enumerate() {
         on_progress(Progress {
             done: i,
             total,
-            entry: &name,
+            entry: name,
         });
 
         if name.ends_with('/') {
             if kept_files.iter().any(|f| f.starts_with(name.as_str())) {
-                writer
-                    .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
-                    .map_err(from_zip)?;
+                copy_raw(&mut archive, &mut writer, i)?;
             }
             continue;
         }
 
-        match decide(&name, &fonts) {
+        match decide(name, &fonts) {
             Action::Skip => {}
             Action::RemoveFont => {
                 report.fonts_removed += 1;
                 report.font_bytes += size;
             }
-            // Copy the compressed bytes as-is, without decompressing and recompressing.
-            Action::CopyRaw => writer
-                .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
-                .map_err(from_zip)?,
+            Action::CopyRaw => copy_raw(&mut archive, &mut writer, i)?,
             Action::Rewrite(transform, not_utf8) => {
-                let bytes = read_entry(&mut archive, i)?.ok_or_else(|| Error::Malformed {
-                    entry: name.clone(),
-                    source: too_large().into(),
-                })?;
+                let bytes = read_entry(&mut archive, i)?
+                    .ok_or_else(|| malformed(name, too_large().into()))?;
                 match String::from_utf8(bytes) {
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
                         // (font removed but still listed in the manifest).
-                        let result = transform(&text, &fonts).map_err(|e| Error::Malformed {
-                            entry: name.clone(),
-                            source: e.into(),
-                        })?;
+                        let result =
+                            transform(&text, &fonts).map_err(|e| malformed(name, e.into()))?;
                         if let Some(new_text) = result {
                             writer
                                 .start_file(name.as_str(), deflated)
@@ -301,15 +299,8 @@ where
                         }
                     }
                     Err(e) => match not_utf8 {
-                        NotUtf8::CopyRaw => writer
-                            .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
-                            .map_err(from_zip)?,
-                        NotUtf8::Reject => {
-                            return Err(Error::Malformed {
-                                entry: name,
-                                source: Box::new(e.utf8_error()),
-                            });
-                        }
+                        NotUtf8::CopyRaw => copy_raw(&mut archive, &mut writer, i)?,
+                        NotUtf8::Reject => return Err(malformed(name, Box::new(e.utf8_error()))),
                     },
                 }
             }
@@ -326,22 +317,18 @@ where
                         // JPEG/PNG are already compressed: deflating them again only costs CPU.
                         writer.start_file(name.as_str(), stored).map_err(from_zip)?;
                         writer.write_all(&new_bytes)?;
+                        continue;
                     }
+                    // Rewriting gained nothing.
+                    Ok(None) => report.images_kept += 1,
                     // An image that fails to decode does not fail the book: it stays as it was.
-                    result => {
-                        match result {
-                            Err(e) => report.warnings.push(Warning {
-                                entry: name.clone(),
-                                message: format!("{e:#}; copied unchanged"),
-                            }),
-                            Ok(_) => report.images_kept += 1,
-                        }
-                        report.image_bytes_after += size;
-                        writer
-                            .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
-                            .map_err(from_zip)?;
-                    }
+                    Err(e) => report.warnings.push(Warning {
+                        entry: name.clone(),
+                        message: format!("{e:#}; copied unchanged"),
+                    }),
                 }
+                report.image_bytes_after += size;
+                copy_raw(&mut archive, &mut writer, i)?;
             }
         }
     }
