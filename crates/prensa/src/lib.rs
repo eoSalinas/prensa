@@ -28,6 +28,9 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// Optimization settings. Start from [`Options::default`] and change what you need.
 ///
+/// [`optimize`] rejects values out of the ranges documented on each field with
+/// [`Error::InvalidOptions`].
+///
 /// The defaults won a side-by-side comparison on an Xteink X4 Pro (CrossPoint):
 /// Q85, Q92, Q92 + sharpening and Q92 + sharpening + 440 px on the same diagram
 /// page; the last one won. 440x733 sits close to the reader viewport (480x800
@@ -36,14 +39,33 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Options {
-    /// Maximum image width, in pixels.
+    /// Maximum image width, in pixels. At least 1.
     pub max_width: u32,
-    /// Maximum image height, in pixels.
+    /// Maximum image height, in pixels. At least 1.
     pub max_height: u32,
     /// JPEG quality, 1-100.
     pub jpeg_quality: u8,
-    /// Unsharp mask sigma applied after downscaling. `0` disables sharpening.
+    /// Unsharp mask sigma applied after downscaling, finite and not negative.
+    /// `0` disables sharpening.
     pub sharpen: f32,
+}
+
+impl Options {
+    /// Check every field against its documented range.
+    fn validate(&self) -> Result<(), Error> {
+        let problem = if self.max_width == 0 {
+            "max_width must be at least 1"
+        } else if self.max_height == 0 {
+            "max_height must be at least 1"
+        } else if !(1..=100).contains(&self.jpeg_quality) {
+            "jpeg_quality must be between 1 and 100"
+        } else if !self.sharpen.is_finite() || self.sharpen < 0.0 {
+            "sharpen must be finite and not negative"
+        } else {
+            return Ok(());
+        };
+        Err(Error::InvalidOptions(problem.to_owned()))
+    }
 }
 
 impl Default for Options {
@@ -79,6 +101,10 @@ pub struct Report {
 }
 
 /// Where [`optimize_with_progress`] is in the book.
+///
+/// Reported before each entry, so `done` goes from `0` to `total - 1`; there is
+/// no call with `done == total`. The book is finished when
+/// [`optimize_with_progress`] returns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Progress<'a> {
@@ -90,6 +116,41 @@ pub struct Progress<'a> {
     pub entry: &'a str,
 }
 
+/// Largest entry read into memory to be rewritten (CSS, OPF, images).
+///
+/// Real books stay far below this; a bigger entry is a zip bomb or a broken
+/// archive, and reading it would exhaust memory. Small in tests so the limit
+/// can be hit without writing hundreds of megabytes.
+const MAX_ENTRY_SIZE: u64 = if cfg!(test) {
+    64 * 1024
+} else {
+    128 * 1024 * 1024
+};
+
+/// Read entry `i` fully, or `None` if it is larger than [`MAX_ENTRY_SIZE`].
+///
+/// The declared size is checked first, but it comes from the archive and can
+/// lie, so the read itself is capped too.
+fn read_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    i: usize,
+) -> Result<Option<Vec<u8>>, Error> {
+    let entry = archive.by_index(i).map_err(from_zip)?;
+    if entry.size() > MAX_ENTRY_SIZE {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    entry.take(MAX_ENTRY_SIZE + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= MAX_ENTRY_SIZE).then_some(bytes))
+}
+
+fn too_large() -> String {
+    format!(
+        "entry is larger than {} MiB",
+        MAX_ENTRY_SIZE / (1024 * 1024)
+    )
+}
+
 /// What to do with each zip entry.
 enum Action {
     /// Already written (`mimetype`, written first).
@@ -98,8 +159,19 @@ enum Action {
     RemoveFont,
     CopyRaw,
     /// `Ok(None)` means the entry is dropped from the output.
-    Rewrite(fn(&str, &Fonts) -> anyhow::Result<Option<String>>),
+    Rewrite(fn(&str, &Fonts) -> anyhow::Result<Option<String>>, NotUtf8),
     Image(images::Kind),
+}
+
+/// What to do with a text entry that is not valid UTF-8.
+enum NotUtf8 {
+    /// Copy it unchanged. Fine when skipping the rewrite leaves the book
+    /// consistent: a leftover `@font-face` points to a missing file, which
+    /// readers already handle by falling back to their own fonts.
+    CopyRaw,
+    /// Fail the book. Copying would list removed fonts in the manifest or in
+    /// `encryption.xml`.
+    Reject,
 }
 
 fn decide(name: &str, fonts: &Fonts) -> Action {
@@ -109,11 +181,11 @@ fn decide(name: &str, fonts: &Fonts) -> Action {
     } else if fonts.contains(name) {
         Action::RemoveFont
     } else if lower.ends_with(".css") {
-        Action::Rewrite(fonts::strip_font_faces)
+        Action::Rewrite(fonts::strip_font_faces, NotUtf8::CopyRaw)
     } else if lower.ends_with(".opf") {
-        Action::Rewrite(fonts::remove_manifest_items)
+        Action::Rewrite(fonts::remove_manifest_items, NotUtf8::Reject)
     } else if lower == "meta-inf/encryption.xml" {
-        Action::Rewrite(fonts::clean_encryption)
+        Action::Rewrite(fonts::clean_encryption, NotUtf8::Reject)
     } else if let Some(kind) = images::kind_of(name) {
         Action::Image(kind)
     } else {
@@ -139,6 +211,10 @@ where
 
 /// Like [`optimize`], calling `on_progress` before each entry is processed.
 ///
+/// On success it is called exactly once per entry (directories included), in
+/// archive order, with `done` equal to the entry's index. Nothing is called
+/// after the last entry; treat the return of this function as completion.
+///
 /// The library never prints; front ends use this to draw a progress bar.
 /// Images take most of the time, so progress is not linear in entries.
 pub fn optimize_with_progress<R, W, F>(
@@ -152,7 +228,8 @@ where
     W: Write + Seek,
     F: FnMut(Progress<'_>),
 {
-    let mut archive = ZipArchive::new(input).map_err(|e| Error::InvalidZip(Box::new(e)))?;
+    opts.validate()?;
+    let mut archive = ZipArchive::new(input).map_err(from_zip)?;
     let mut writer = ZipWriter::new(output);
 
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -180,20 +257,15 @@ where
         if !name.to_ascii_lowercase().ends_with(".opf") {
             continue;
         }
-        let mut bytes = Vec::new();
-        archive
-            .by_index(i)
-            .map_err(from_zip)?
-            .read_to_end(&mut bytes)?;
-        // A non-UTF-8 OPF is not rewritten either; it is handled in the main pass.
-        if let Ok(opf) = std::str::from_utf8(&bytes) {
-            fonts
-                .add_manifest(opf, name)
-                .map_err(|e| Error::Malformed {
-                    entry: name.clone(),
-                    source: e.into(),
-                })?;
-        }
+        let malformed = |source: Source| Error::Malformed {
+            entry: name.clone(),
+            source,
+        };
+        let bytes = read_entry(&mut archive, i)?.ok_or_else(|| malformed(too_large().into()))?;
+        let opf = std::str::from_utf8(&bytes).map_err(|e| malformed(Box::new(e)))?;
+        fonts
+            .add_manifest(opf, name)
+            .map_err(|e| malformed(e.into()))?;
     }
 
     let kept_files: Vec<&str> = names
@@ -243,12 +315,11 @@ where
             Action::CopyRaw => writer
                 .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
                 .map_err(from_zip)?,
-            Action::Rewrite(transform) => {
-                let mut bytes = Vec::new();
-                archive
-                    .by_index(i)
-                    .map_err(from_zip)?
-                    .read_to_end(&mut bytes)?;
+            Action::Rewrite(transform, not_utf8) => {
+                let bytes = read_entry(&mut archive, i)?.ok_or_else(|| Error::Malformed {
+                    entry: name.clone(),
+                    source: too_large().into(),
+                })?;
                 match String::from_utf8(bytes) {
                     Ok(text) => {
                         // Broken XML aborts everything: no output beats an inconsistent EPUB
@@ -264,20 +335,26 @@ where
                             writer.write_all(new_text.as_bytes())?;
                         }
                     }
-                    // Not UTF-8: do not risk it, copy unchanged.
-                    Err(_) => writer
-                        .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
-                        .map_err(from_zip)?,
+                    Err(e) => match not_utf8 {
+                        NotUtf8::CopyRaw => writer
+                            .raw_copy_file(archive.by_index_raw(i).map_err(from_zip)?)
+                            .map_err(from_zip)?,
+                        NotUtf8::Reject => {
+                            return Err(Error::Malformed {
+                                entry: name,
+                                source: Box::new(e.utf8_error()),
+                            });
+                        }
+                    },
                 }
             }
             Action::Image(kind) => {
-                let mut bytes = Vec::new();
-                archive
-                    .by_index(i)
-                    .map_err(from_zip)?
-                    .read_to_end(&mut bytes)?;
                 report.image_bytes_before += size;
-                match images::optimize(kind, &bytes, opts) {
+                let result = match read_entry(&mut archive, i)? {
+                    Some(bytes) => images::optimize(kind, &bytes, opts),
+                    None => Err(anyhow::anyhow!(too_large())),
+                };
+                match result {
                     Ok(Some(new_bytes)) => {
                         report.images_changed += 1;
                         report.image_bytes_after += new_bytes.len() as u64;
@@ -468,6 +545,145 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         let err = optimize(Cursor::new(b"not a zip"), &mut output, &Options::default());
         assert!(matches!(err, Err(Error::InvalidZip(_))));
+    }
+
+    /// Zip with one deflated entry per `(name, bytes)`, plus a font.
+    fn zip_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in entries.iter().chain([&("OEBPS/f.ttf", &b"font"[..])]) {
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect()
+    }
+
+    #[test]
+    fn rejects_opf_and_encryption_that_are_not_utf8() {
+        let opf = utf16(r#"<package><manifest><item href="f.ttf" id="f"/></manifest></package>"#);
+        let enc = utf16(
+            r#"<encryption><EncryptedData><CipherReference URI="OEBPS/f.ttf"/></EncryptedData></encryption>"#,
+        );
+        for (name, bytes) in [
+            ("OEBPS/content.opf", &opf),
+            ("META-INF/encryption.xml", &enc),
+        ] {
+            let input = zip_with(&[(name, bytes)]);
+            let mut output = Cursor::new(Vec::new());
+            match optimize(Cursor::new(input), &mut output, &Options::default()) {
+                Err(Error::Malformed { entry, .. }) => assert_eq!(entry, name),
+                other => panic!("{name}: expected Malformed, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn copies_css_that_is_not_utf8() {
+        // Latin-1 `é` in a comment: invalid UTF-8.
+        let css = b"/* caf\xe9 */ @font-face { src: url(f.ttf) }";
+        let input = zip_with(&[("OEBPS/style.css", css)]);
+        let mut output = Cursor::new(Vec::new());
+        optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let after = read_all(output.get_ref());
+        let (_, bytes) = after.iter().find(|(n, _)| n == "OEBPS/style.css").unwrap();
+        assert_eq!(bytes, css);
+    }
+
+    #[test]
+    fn rejects_out_of_range_options() {
+        let input = build_epub(&[vec!["a".into()]], None).unwrap();
+        let cases: [fn(&mut Options); 6] = [
+            |o| o.max_width = 0,
+            |o| o.max_height = 0,
+            |o| o.jpeg_quality = 0,
+            |o| o.jpeg_quality = 101,
+            |o| o.sharpen = -1.0,
+            |o| o.sharpen = f32::NAN,
+        ];
+        for change in cases {
+            let mut opts = Options::default();
+            change(&mut opts);
+            let mut output = Cursor::new(Vec::new());
+            let result = optimize(Cursor::new(&input), &mut output, &opts);
+            assert!(
+                matches!(result, Err(Error::InvalidOptions(_))),
+                "{opts:?} gave {result:?}"
+            );
+            assert!(output.get_ref().is_empty(), "nothing written for {opts:?}");
+        }
+    }
+
+    #[test]
+    fn read_errors_are_io_errors() {
+        /// A reader whose disk fails: not a malformed book.
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk failed"))
+            }
+        }
+        impl Seek for FailingReader {
+            fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> {
+                Ok(100)
+            }
+        }
+
+        let mut output = Cursor::new(Vec::new());
+        let err = optimize(FailingReader, &mut output, &Options::default());
+        assert!(matches!(err, Err(Error::Io(_))), "got {err:?}");
+    }
+
+    /// Zip with a single deflated entry of `size` zero bytes.
+    fn zip_with_zeros(name: &str, size: u64) -> Vec<u8> {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        std::io::copy(&mut std::io::repeat(0).take(size), &mut zip).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn oversized_text_entry_fails_the_book() {
+        let input = zip_with_zeros("OEBPS/style.css", MAX_ENTRY_SIZE + 1);
+        let mut output = Cursor::new(Vec::new());
+        match optimize(Cursor::new(input), &mut output, &Options::default()) {
+            Err(Error::Malformed { entry, source }) => {
+                assert_eq!(entry, "OEBPS/style.css");
+                assert!(source.to_string().contains("larger than"), "{source}");
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oversized_image_is_copied_unchanged() {
+        let input = zip_with_zeros("OEBPS/a.png", MAX_ENTRY_SIZE + 1);
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(&input), &mut output, &Options::default()).unwrap();
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0].contains("larger than"),
+            "{:?}",
+            report.warnings
+        );
+        let after = read_all(output.get_ref());
+        assert_eq!(after[1].0, "OEBPS/a.png");
+        assert_eq!(after[1].1.len() as u64, MAX_ENTRY_SIZE + 1);
+    }
+
+    #[test]
+    fn entry_at_the_limit_is_read() {
+        let input = zip_with_zeros("OEBPS/style.css", MAX_ENTRY_SIZE);
+        let mut archive = ZipArchive::new(Cursor::new(input)).unwrap();
+        let bytes = read_entry(&mut archive, 0)
+            .unwrap()
+            .expect("within the limit");
+        assert_eq!(bytes.len() as u64, MAX_ENTRY_SIZE);
     }
 
     #[test]
