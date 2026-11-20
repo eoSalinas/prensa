@@ -18,6 +18,9 @@ pub struct Report {
     /// `images_changed` too. The file is renamed (`fig.webp` becomes
     /// `fig.jpg`) and every reference to it updated.
     pub images_converted: usize,
+    /// Images turned 90° so that a wide image fills the screen's height.
+    /// Counted in `images_changed` too.
+    pub images_rotated: usize,
     /// Images kept as they were because rewriting gained nothing.
     pub images_kept: usize,
     /// Images copied unchanged because they could not be rewritten (failed to
