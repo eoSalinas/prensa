@@ -67,6 +67,17 @@ pub(crate) fn kind_of(name: &str) -> Option<Kind> {
 }
 
 impl Kind {
+    /// Usual file extension and media type of the format.
+    pub(crate) fn extension_and_media_type(self) -> (&'static str, &'static str) {
+        match self {
+            Kind::Jpeg => ("jpg", "image/jpeg"),
+            Kind::Png => ("png", "image/png"),
+            Kind::Gif => ("gif", "image/gif"),
+            Kind::Bmp => ("bmp", "image/bmp"),
+            Kind::Webp => ("webp", "image/webp"),
+        }
+    }
+
     /// Whether the output can have another format, so the file may be renamed.
     pub(crate) fn may_change_format(self) -> bool {
         !matches!(self, Kind::Jpeg | Kind::Png)

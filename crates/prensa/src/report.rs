@@ -21,6 +21,10 @@ pub struct Report {
     /// Images turned 90° so that a wide image fills the screen's height.
     /// Counted in `images_changed` too.
     pub images_rotated: usize,
+    /// Images moved out of chapters, where they were embedded as `data:`
+    /// URIs that CrossPoint does not show, into entries of their own. Each is
+    /// also counted in `images_changed` or `images_kept`.
+    pub images_extracted: usize,
     /// Images kept as they were because rewriting gained nothing.
     pub images_kept: usize,
     /// Images copied unchanged because they could not be rewritten (failed to

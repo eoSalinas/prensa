@@ -155,6 +155,10 @@ it if you need atomic writes.
   upscales), converts it to grayscale (flattening transparency onto white),
   and writes JPEGs as baseline. If the result is not smaller and the image did
   not need to change, the original is kept.
+- **Embedded images:** images written inside a chapter as `data:` URIs
+  (`<img src="data:image/png;base64,...">`) never show on CrossPoint. Each one
+  moves to a file next to the chapter, goes through the same image steps, and
+  is listed in the manifest.
 - **Wide diagrams** (`--rotate cw` or `ccw`, off by default): an image that
   would be shrunk to less than a third of its size to fit the width is turned
   90° when that shows it at least 30% larger (up to 1.67× on 440×733), and its
