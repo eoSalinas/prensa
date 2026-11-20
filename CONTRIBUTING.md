@@ -136,7 +136,8 @@ Common types are `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci` and
 `chore`, with a lowercase description. Commits inside the branch can be
 anything; only the title counts.
 
-In the description, say what changed and why, and how you tested it. CI checks
+The description template has two sections: **Summary** (what changed and
+why) and **Testing** (what you ran and what came out). CI checks
 formatting, lints, tests, the minimum Rust version, library semver and the
 title; all of them must pass before merging.
 
