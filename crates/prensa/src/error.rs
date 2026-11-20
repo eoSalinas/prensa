@@ -30,6 +30,11 @@ pub enum Error {
         source: Source,
     },
 
+    /// An [`Options`](crate::Options) value is out of range, e.g. a maximum
+    /// image width of `0`. Checked before anything is read or written.
+    #[error("invalid options: {0}")]
+    InvalidOptions(String),
+
     /// Reading the input or writing the output failed.
     #[error(transparent)]
     Io(#[from] io::Error),

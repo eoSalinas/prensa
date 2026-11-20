@@ -32,20 +32,32 @@ pub(crate) fn kind_of(name: &str) -> Option<Kind> {
     }
 }
 
-/// Look for the SOF marker: `FFC2` = progressive, `FFC0`/`FFC1` = baseline.
+/// Look for the frame header (SOF) and report whether it is progressive.
+///
+/// SOF markers are `FFC0`-`FFCF` except `FFC4` (DHT), `FFC8` (reserved) and
+/// `FFCC` (DAC); `FFC2`, `FFC6`, `FFCA` and `FFCE` are the progressive ones.
+/// Any marker may be preceded by `FF` fill bytes.
 pub(crate) fn is_progressive_jpeg(data: &[u8]) -> bool {
     let mut i = 2; // skip SOI (FFD8)
-    while i + 4 <= data.len() {
+    while i + 1 < data.len() {
         if data[i] != 0xFF {
             i += 1;
             continue;
         }
         match data[i + 1] {
-            0xC2 => return true,
-            0xC0 | 0xC1 => return false,
+            // Fill byte: the marker is one byte further.
+            0xFF => i += 1,
+            0xC2 | 0xC6 | 0xCA | 0xCE => return true,
+            0xC0..=0xCF if !matches!(data[i + 1], 0xC4 | 0xC8 | 0xCC) => return false,
+            // Scan data or end of image before any frame header: not a JPEG we understand.
+            0xDA | 0xD9 => return false,
+            // Standalone markers (TEM, RSTn, SOI) have no length field.
+            0x01 | 0xD0..=0xD8 => i += 2,
             _ => {
-                let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-                i += 2 + len;
+                let Some(&[hi, lo]) = data.get(i + 2..i + 4) else {
+                    return false;
+                };
+                i += 2 + usize::from(u16::from_be_bytes([hi, lo]));
             }
         }
     }
@@ -156,10 +168,18 @@ mod tests {
 
     #[test]
     fn never_upscales() {
-        let out = optimize(Kind::Jpeg, &colorful_jpeg(100, 50), &Options::default()).unwrap();
-        if let Some(out) = out {
-            assert_eq!(decode(&out).width(), 100);
-        }
+        // Tested below `optimize`, which may keep a small image untouched and
+        // then has no output to check.
+        let small = decode(&colorful_jpeg(100, 50));
+        let out = to_screen_gray(&small, &Options::default());
+        assert_eq!(out.dimensions(), (100, 50));
+    }
+
+    #[test]
+    fn fits_a_tall_image_by_height() {
+        let tall = decode(&colorful_jpeg(500, 2000));
+        let out = to_screen_gray(&tall, &Options::default());
+        assert_eq!(out.dimensions(), (183, 733));
     }
 
     #[test]
@@ -181,6 +201,42 @@ mod tests {
         // SOI, SOF2 (progressive) with minimal length.
         assert!(is_progressive_jpeg(&[0xFF, 0xD8, 0xFF, 0xC2, 0x00, 0x02]));
         assert!(!is_progressive_jpeg(&colorful_jpeg(8, 8)));
+    }
+
+    #[test]
+    fn detects_progressive_jpeg_after_fill_bytes() {
+        // SOI, APP0 (length 4), fill bytes, SOF2. The old parser read the fill
+        // byte as a marker, took `FF C2` as its length and skipped the SOF.
+        let data = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xC2, 0x00, 0x02,
+        ];
+        assert!(is_progressive_jpeg(&data));
+    }
+
+    #[test]
+    fn detects_every_progressive_sof() {
+        for marker in [0xC2, 0xC6, 0xCA, 0xCE] {
+            assert!(is_progressive_jpeg(&[0xFF, 0xD8, 0xFF, marker, 0x00, 0x02]));
+        }
+        for marker in [0xC0, 0xC1, 0xC3, 0xC9] {
+            assert!(!is_progressive_jpeg(&[
+                0xFF, 0xD8, 0xFF, marker, 0x00, 0x02
+            ]));
+        }
+    }
+
+    #[test]
+    fn skips_tables_before_the_frame_header() {
+        // DHT (FFC4) is in the SOF range but is not a SOF.
+        let data = [0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x02, 0xFF, 0xC2, 0x00, 0x02];
+        assert!(is_progressive_jpeg(&data));
+    }
+
+    #[test]
+    fn truncated_jpeg_is_not_progressive() {
+        assert!(!is_progressive_jpeg(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]));
+        assert!(!is_progressive_jpeg(&[0xFF, 0xD8, 0xFF]));
+        assert!(!is_progressive_jpeg(&[]));
     }
 
     #[test]
