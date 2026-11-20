@@ -118,8 +118,9 @@ prensa = "0.1"
 use std::fs::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut opts = prensa::Options::default();
-    opts.max_width = 600; // e.g. a larger screen
+    let opts = prensa::Options::builder()
+        .max_size(600, 800) // e.g. a larger screen
+        .build()?;
 
     let input = File::open("book.epub")?;
     let output = File::create("book-optimized.epub")?;

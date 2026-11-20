@@ -78,21 +78,20 @@ fn to_screen_gray(img: &DynamicImage, opts: &Options) -> GrayImage {
         img.to_luma8()
     };
 
-    let resized = gray.width() > opts.max_width || gray.height() > opts.max_height;
+    let resized = gray.width() > opts.max_width() || gray.height() > opts.max_height();
     let gray = if resized {
         // `resize` keeps the aspect ratio and fits inside the box.
         DynamicImage::ImageLuma8(gray)
-            .resize(opts.max_width, opts.max_height, FilterType::Lanczos3)
+            .resize(opts.max_width(), opts.max_height(), FilterType::Lanczos3)
             .into_luma8()
     } else {
         gray
     };
 
     // Sharpen only after downscaling (offsets Lanczos softening).
-    if resized && opts.sharpen > 0.0 {
-        image::imageops::unsharpen(&gray, opts.sharpen, 2)
-    } else {
-        gray
+    match opts.sharpen() {
+        Some(sigma) if resized => image::imageops::unsharpen(&gray, sigma, 2),
+        _ => gray,
     }
 }
 
@@ -101,7 +100,7 @@ fn encode(kind: Kind, img: &GrayImage, opts: &Options) -> Result<Vec<u8>> {
     let (w, h) = img.dimensions();
     match kind {
         // The `image` crate's JPEG encoder only emits baseline.
-        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality).write_image(
+        Kind::Jpeg => JpegEncoder::new_with_quality(&mut out, opts.jpeg_quality()).write_image(
             img.as_raw(),
             w,
             h,
@@ -124,7 +123,7 @@ pub(crate) fn optimize(kind: Kind, data: &[u8], opts: &Options) -> Result<Option
     let img = image::load_from_memory_with_format(data, format)?;
 
     // Cases where the change is required even if the file grows.
-    let too_big = img.width() > opts.max_width || img.height() > opts.max_height;
+    let too_big = img.width() > opts.max_width() || img.height() > opts.max_height();
     let progressive = kind == Kind::Jpeg && is_progressive_jpeg(data);
 
     let out = encode(kind, &to_screen_gray(&img, opts), opts)?;
