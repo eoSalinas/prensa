@@ -180,7 +180,7 @@ where
     F: FnMut(Progress<'_>),
 {
     opts.validate()?;
-    let mut archive = ZipArchive::new(input).map_err(|e| Error::InvalidZip(Box::new(e)))?;
+    let mut archive = ZipArchive::new(input).map_err(from_zip)?;
     let mut writer = ZipWriter::new(output);
 
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -550,6 +550,26 @@ mod tests {
             );
             assert!(output.get_ref().is_empty(), "nothing written for {opts:?}");
         }
+    }
+
+    #[test]
+    fn read_errors_are_io_errors() {
+        /// A reader whose disk fails: not a malformed book.
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk failed"))
+            }
+        }
+        impl Seek for FailingReader {
+            fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> {
+                Ok(100)
+            }
+        }
+
+        let mut output = Cursor::new(Vec::new());
+        let err = optimize(FailingReader, &mut output, &Options::default());
+        assert!(matches!(err, Err(Error::Io(_))), "got {err:?}");
     }
 
     #[test]
