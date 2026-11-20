@@ -149,10 +149,15 @@ it if you need atomic writes.
 - **Fonts:** removes embedded font files, their manifest entries, `@font-face`
   rules and font entries in `META-INF/encryption.xml`. CrossPoint ignores
   `@font-face` and always renders with its own fonts, so they are dead weight.
-- **Images:** fits every JPEG and PNG into 440×733 (never upscales), converts
-  it to grayscale (flattening transparency onto white), and writes JPEGs as
-  baseline. If the result is not smaller and the image did not need to change,
-  the original is kept.
+- **Images:** fits every JPEG, PNG, GIF, WebP and BMP into 440×733 (never
+  upscales), converts it to grayscale (flattening transparency onto white),
+  and writes JPEGs as baseline. If the result is not smaller and the image did
+  not need to change, the original is kept.
+- **Formats:** CrossPoint shows only JPEG, PNG and GIF, and picks the decoder
+  from the file extension. WebP and BMP images are converted (lossy WebP to
+  JPEG; lossless WebP and BMP to PNG) and renamed, and every reference to them
+  in chapters, CSS and the manifest is updated. GIF becomes PNG when that is
+  smaller or the image has to shrink.
 
 ## Guarantees
 

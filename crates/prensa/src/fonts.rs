@@ -8,6 +8,7 @@
 //! - `@font-face` blocks in CSS (regex: `@font-face` never has nested braces).
 
 use crate::passes::Outcome;
+use crate::refs::{dir_of, resolve};
 use anyhow::{Result, bail};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer, XmlVersion};
@@ -45,7 +46,7 @@ pub struct Fonts {
 impl Fonts {
     /// Add the font items of the OPF at `opf_path` (a zip path).
     pub fn add_manifest(&mut self, opf: &str, opf_path: &str) -> Result<()> {
-        let base = opf_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let base = dir_of(opf_path);
         let mut reader = Reader::from_str(opf);
         loop {
             match reader.read_event()? {
@@ -67,55 +68,6 @@ impl Fonts {
     pub fn contains(&self, path: &str) -> bool {
         is_font(path) || self.declared.contains(path)
     }
-}
-
-/// Zip path of a manifest `href`, relative to the OPF directory `base`.
-/// `None` for remote resources.
-fn resolve(base: &str, href: &str) -> Option<String> {
-    let href = href.split(['#', '?']).next().unwrap_or_default();
-    if href.contains("://") {
-        return None;
-    }
-    let href = percent_decode(href);
-    let (start, href) = match href.strip_prefix('/') {
-        Some(rest) => ("", rest),
-        None => (base, href.as_str()),
-    };
-    let mut parts: Vec<&str> = start.split('/').filter(|p| !p.is_empty()).collect();
-    for part in href.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            part => parts.push(part),
-        }
-    }
-    Some(parts.join("/"))
-}
-
-/// Decode `%XX` escapes. Invalid escapes or non-UTF-8 results are kept as is.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes
-            .get(i + 1..i + 3)
-            .and_then(|h| std::str::from_utf8(h).ok())
-            .and_then(|h| u8::from_str_radix(h, 16).ok());
-        match (bytes[i], hex) {
-            (b'%', Some(byte)) => {
-                out.push(byte);
-                i += 3;
-            }
-            (b, _) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
 }
 
 pub fn strip_font_faces(css: &str, _fonts: &Fonts) -> Result<Outcome> {
@@ -349,19 +301,5 @@ mod tests {
             .unwrap();
         let xml = r#"<encryption><EncryptedData><CipherReference URI="OEBPS/f0001"/></EncryptedData></encryption>"#;
         assert_eq!(clean_encryption(xml, &fonts).unwrap(), Outcome::Drop);
-    }
-
-    #[test]
-    fn resolves_hrefs() {
-        assert_eq!(resolve("OEBPS", "a.ttf").as_deref(), Some("OEBPS/a.ttf"));
-        assert_eq!(
-            resolve("OEBPS/text", "../fonts/a.ttf").as_deref(),
-            Some("OEBPS/fonts/a.ttf")
-        );
-        assert_eq!(resolve("", "./a%20b.ttf#x").as_deref(), Some("a b.ttf"));
-        assert_eq!(resolve("OEBPS", "/root.ttf").as_deref(), Some("root.ttf"));
-        assert_eq!(resolve("OEBPS", "https://example.com/a.ttf"), None);
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(percent_decode("%zz"), "%zz");
     }
 }

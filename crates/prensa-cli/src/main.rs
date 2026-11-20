@@ -168,8 +168,12 @@ fn print_summary(output: &Path, sizes: &Sizes) {
     let images = if total_images == 0 {
         style("none".to_string()).dim().to_string()
     } else {
+        let converted = match r.images_converted {
+            0 => String::new(),
+            n => format!(" ({n} converted to JPEG/PNG)"),
+        };
         format!(
-            "{} optimized, {} kept ({} → {})",
+            "{} optimized{converted}, {} kept ({} → {})",
             style(r.images_changed).bold(),
             r.images_kept,
             mb(r.image_bytes_before),
