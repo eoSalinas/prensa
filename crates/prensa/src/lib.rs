@@ -329,7 +329,10 @@ where
                         report.images_failed += 1;
                         report.warnings.push(Warning {
                             entry: name.clone(),
-                            message: format!("{e:#}; copied unchanged"),
+                            // `{e}`, not `{e:#}`: `image` errors already include their
+                            // cause in the message, so the chain would repeat it. Some
+                            // decoders end it with a newline; a warning is one line.
+                            message: format!("{}; copied unchanged", e.to_string().trim_end()),
                         });
                     }
                 }
@@ -668,8 +671,28 @@ mod tests {
         assert_eq!(warning.entry, "OEBPS/a.png");
         assert!(warning.message.ends_with("; copied unchanged"), "{warning}");
         assert!(warning.to_string().starts_with("OEBPS/a.png: "));
+        assert_eq!(
+            warning.message.matches("Invalid PNG signature").count(),
+            1,
+            "{warning}"
+        );
         assert_eq!(report.images_failed, 1);
         assert_eq!(report.images_kept, 0);
+    }
+
+    #[test]
+    fn truncated_jpeg_warning_is_one_line() {
+        let input = zip_with(&[("OEBPS/a.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")]);
+        let mut output = Cursor::new(Vec::new());
+        let report = optimize(Cursor::new(input), &mut output, &Options::default()).unwrap();
+        let [warning] = report.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", report.warnings);
+        };
+        assert!(!warning.message.contains('\n'), "{warning:?}");
+        assert!(
+            warning.message.ends_with("; copied unchanged"),
+            "{warning:?}"
+        );
     }
 
     #[test]
