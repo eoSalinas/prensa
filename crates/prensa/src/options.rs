@@ -1,5 +1,34 @@
 //! Optimization settings and their builder.
 
+/// An e-reader prensa has a profile for.
+///
+/// A profile is the box images are fitted into: a bit smaller than the screen,
+/// since the reader keeps margins around the page. Pass one to
+/// [`OptionsBuilder::device`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum Device {
+    /// Xteink X4, X4 Pro and X4 Classic (same 480x800 panel): images fit
+    /// 440x733. Chosen in a side-by-side comparison on an X4 Pro running
+    /// CrossPoint. The default.
+    #[default]
+    X4,
+    /// Xteink X3 (screen 528x792): images fit 484x726, the X4 box scaled to
+    /// this screen (same margins, relative to the screen). Not yet compared
+    /// on the device.
+    X3,
+}
+
+impl Device {
+    /// Largest image, as (width, height) in pixels.
+    pub fn max_size(self) -> (u32, u32) {
+        match self {
+            Device::X4 => (440, 733),
+            Device::X3 => (484, 726),
+        }
+    }
+}
+
 /// Optimization settings, always valid.
 ///
 /// Use [`Options::default`] for the defaults, or [`Options::builder`] to change
@@ -63,9 +92,10 @@ impl Options {
 
 impl Default for Options {
     fn default() -> Self {
+        let (max_width, max_height) = Device::default().max_size();
         Self {
-            max_width: 440,
-            max_height: 733,
+            max_width,
+            max_height,
             jpeg_quality: 92,
             sharpen: Some(0.8),
         }
@@ -90,6 +120,14 @@ impl OptionsBuilder {
         self.opts.max_width = width;
         self.opts.max_height = height;
         self
+    }
+
+    /// Fit images to the profile of `device`. The same as
+    /// [`max_size`](Self::max_size) with [`Device::max_size`]; a later
+    /// `max_size` call overrides it.
+    pub fn device(self, device: Device) -> Self {
+        let (width, height) = device.max_size();
+        self.max_size(width, height)
     }
 
     /// JPEG quality, 1-100.
@@ -184,6 +222,29 @@ mod tests {
         let sharp = Options::builder().sharpen(1.5).build().unwrap();
         assert_eq!(sharp.sharpen(), Some(1.5));
         assert_eq!(sharp.max_width(), Options::default().max_width());
+    }
+
+    #[test]
+    fn device_sets_the_image_box() {
+        let x3 = Options::builder().device(Device::X3).build().unwrap();
+        assert_eq!((x3.max_width(), x3.max_height()), (484, 726));
+        let x4 = Options::builder().device(Device::X4).build().unwrap();
+        assert_eq!(x4, Options::default());
+        // A later max_size wins.
+        let custom = Options::builder()
+            .device(Device::X3)
+            .max_size(600, 800)
+            .build()
+            .unwrap();
+        assert_eq!((custom.max_width(), custom.max_height()), (600, 800));
+    }
+
+    #[test]
+    fn x3_box_keeps_the_x4_margins() {
+        // 440/480 and 733/800 of the screen, applied to 528x792.
+        let (w, h) = Device::X3.max_size();
+        assert_eq!(w, (528.0_f64 * 440.0 / 480.0).round() as u32);
+        assert_eq!(h, (792.0_f64 * 733.0 / 800.0).round() as u32);
     }
 
     #[test]

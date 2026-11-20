@@ -23,7 +23,7 @@ mod refs;
 mod report;
 
 pub use error::{Error, Source};
-pub use options::{InvalidOptions, Options, OptionsBuilder};
+pub use options::{Device, InvalidOptions, Options, OptionsBuilder};
 pub use report::{Progress, Report, Warning};
 
 use error::from_zip;

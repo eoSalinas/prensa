@@ -95,8 +95,9 @@ Then copy `book-optimized.epub` to the device.
 
 | Option | Default | Description |
 |---|---|---|
-| `--max-width <PX>` | `440` | Maximum image width |
-| `--max-height <PX>` | `733` | Maximum image height |
+| `--device <x4\|x3>` | `x4` | E-reader to fit images to: Xteink X4, X4 Pro or X4 Classic (440×733; `x4-pro` and `x4-classic` also work), or X3 (484×726) |
+| `--max-width <PX>` | from `--device` | Maximum image width |
+| `--max-height <PX>` | from `--device` | Maximum image height |
 | `--quality <1-100>` | `92` | JPEG quality |
 | `--sharpen <SIGMA>` | `0.8` | Unsharp mask after downscaling; `0` disables it |
 
@@ -170,7 +171,10 @@ it if you need atomic writes.
 
 ## Limitations
 
-- Tuned for CrossPoint on a 480×800 screen. Readers that use embedded fonts
+- Tuned for CrossPoint on a 480×800 screen (Xteink X4 Pro; the X4 and X4
+  Classic share its panel). The X3 profile
+  scales the X4 box to its 528×792 screen and has not been compared on the
+  device yet. Readers that use embedded fonts
   (e.g. KOReader) will fall back to their own fonts after `prensa` removes them.
 - Very wide diagrams become visible but their smallest text can still be hard
   to read at 440 px.
