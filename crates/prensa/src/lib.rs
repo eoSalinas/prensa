@@ -320,6 +320,26 @@ mod tests {
         out
     }
 
+    /// Element structure: start, end and empty tags by name, in order.
+    /// Attributes are left out on purpose: prensa may rewrite image
+    /// attributes (`src`, `width`), never the tree. Reading positions in sync
+    /// services (KOReader's XPath) depend on this tree and on the text.
+    fn tags(xhtml: &str) -> Vec<String> {
+        let mut reader = Reader::from_str(xhtml);
+        let mut out = Vec::new();
+        loop {
+            let tag = match reader.read_event().expect("valid XHTML") {
+                Event::Eof => break,
+                Event::Start(e) => format!("<{}>", e.name().as_ref()),
+                Event::Empty(e) => format!("<{}/>", e.name().as_ref()),
+                Event::End(e) => format!("</{}>", e.name().as_ref()),
+                _ => continue,
+            };
+            out.push(tag);
+        }
+        out
+    }
+
     /// Build a minimal EPUB in memory: chapters, optional embedded font + @font-face,
     /// optional obfuscation entry.
     fn build_epub(chapters: &[Vec<String>], font: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
@@ -350,7 +370,7 @@ mod tests {
                 .map(|p| format!("<p>{}</p>", escape(p)))
                 .collect();
             zip.start_file(format!("OEBPS/ch{i}.xhtml"), stored)?;
-            zip.write_all(format!(r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#).as_bytes())?;
+            zip.write_all(format!(r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body><div><h1>Chapter {i}</h1>{body}<img src="figure.png" alt=""/></div></body></html>"#).as_bytes())?;
         }
         zip.start_file("OEBPS/style.css", stored)?;
         zip.write_all(css.as_bytes())?;
@@ -371,11 +391,12 @@ mod tests {
             .collect()
     }
 
-    fn chapter_texts(entries: &[(String, Vec<u8>)]) -> Vec<String> {
+    /// `f` applied to every chapter, in archive order.
+    fn per_chapter<T>(entries: &[(String, Vec<u8>)], f: fn(&str) -> T) -> Vec<T> {
         entries
             .iter()
             .filter(|(name, _)| name.ends_with(".xhtml"))
-            .map(|(_, bytes)| visible_text(std::str::from_utf8(bytes).unwrap()))
+            .map(|(_, bytes)| f(std::str::from_utf8(bytes).unwrap()))
             .collect()
     }
 
@@ -393,9 +414,10 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         /// The core promise: whatever the book contains, the text a reader sees
-        /// is identical before and after, and the output is a valid EPUB container.
+        /// and the element structure around it are identical before and after,
+        /// and the output is a valid EPUB container.
         #[test]
-        fn visible_text_is_unchanged(
+        fn visible_text_and_structure_are_unchanged(
             chapters in prop::collection::vec(prop::collection::vec("\\PC{0,60}", 0..5), 1..4),
             font in prop::option::of(prop::collection::vec(any::<u8>(), 1..64)),
         ) {
@@ -406,7 +428,8 @@ mod tests {
 
             let before = read_all(&input);
             let after = read_all(output.get_ref());
-            prop_assert_eq!(chapter_texts(&before), chapter_texts(&after));
+            prop_assert_eq!(per_chapter(&before, visible_text), per_chapter(&after, visible_text));
+            prop_assert_eq!(per_chapter(&before, tags), per_chapter(&after, tags));
 
             // Container rules and the fonts pass, checked on every case.
             prop_assert_eq!(after[0].0.as_str(), "mimetype");
@@ -416,6 +439,19 @@ mod tests {
             prop_assert!(!String::from_utf8_lossy(opf).contains("f.ttf"));
             prop_assert_eq!(report.fonts_removed, usize::from(font.is_some()));
         }
+    }
+
+    #[test]
+    fn structure_ignores_attributes_but_not_elements() {
+        let original = r#"<p>A. B.<img src="a.png" width="900"/></p>"#;
+        let new_attributes = r#"<p>A. B.<img src="a.jpg"/></p>"#;
+        // Same text, one paragraph split in two: what a "split long
+        // paragraphs" pass would do, and what this check exists to catch.
+        let split = r#"<p>A. </p><p>B.<img src="a.png" width="900"/></p>"#;
+
+        assert_eq!(tags(original), tags(new_attributes));
+        assert_eq!(visible_text(original), visible_text(split));
+        assert_ne!(tags(original), tags(split));
     }
 
     #[test]
