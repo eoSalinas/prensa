@@ -21,6 +21,10 @@
 }
 
 body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100svh;
   margin: 0;
   background: var(--bg);
   color: var(--ink);
@@ -74,6 +78,10 @@ main,
 .site-footer {
   width: min(100% - 2rem, 40rem);
   margin-inline: auto;
+}
+
+main {
+  flex: 1;
 }
 
 .site-header {
@@ -328,6 +336,7 @@ dd {
   padding: 2rem 0 3rem;
   color: var(--muted);
   font-size: .95rem;
+  text-align: center;
 }
 
 .sr-only {
