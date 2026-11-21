@@ -61,9 +61,42 @@ deployments** → approve. The workflow then:
    token is stored anywhere
 4. runs `cargo publish --workspace` (`prensa`, then `prensa-cli`)
 5. creates the GitHub Release `vX.Y.Z` with notes generated from the PRs
+6. deploys the web page built from the tag to GitHub Pages
+   ([`pages.yml`](.github/workflows/pages.yml))
 
-Afterwards, check the new version on crates.io and `cargo install prensa-cli`.
-Edit the GitHub Release if it needs an introduction above the generated notes.
+Afterwards, check the new version on crates.io and `cargo install prensa-cli`,
+and open the site. Edit the GitHub Release if it needs an introduction above
+the generated notes.
+
+## Fixing the site between releases
+
+Only small fixes to the page (a typo, a broken style, a wrong link); new
+features ship with a release.
+
+1. **Open a PR with the fix to `main` and merge it**, as usual. The fix must
+   be on `main` first, or the next release would deploy the site without it.
+2. **Deploy.** The wasm is built from the same ref as the page, so the
+   workflow refuses a ref whose `crates/`, `Cargo.toml` or `Cargo.lock` differ
+   from the latest release: the site would run unreleased code.
+   - If `main` has no such changes since the latest release, deploy `main`:
+
+     ```sh
+     gh workflow run pages.yml -f ref=main
+     ```
+
+   - Otherwise, deploy a `hotfix/` branch made from the latest tag, with only
+     the fix copied from `main`. It needs no PR, since the fix is already on
+     `main`; delete it after the deploy.
+
+     ```sh
+     git switch -c hotfix/<slug> vX.Y.Z
+     git cherry-pick <fix commit on main>
+     git push -u origin hotfix/<slug>
+     gh workflow run pages.yml -f ref=hotfix/<slug>
+     ```
+
+`gh workflow run pages.yml` without `ref` redeploys the latest release, and
+`-f ref=vX.Y.Z` rolls back to an older one.
 
 ## When something goes wrong
 
@@ -71,6 +104,7 @@ Edit the GitHub Release if it needs an introduction above the generated notes.
 |---|---|
 | Failed before publishing (tag check, tests, authentication) | Nothing was published. Fix the cause, delete the tag (`git push --delete origin vX.Y.Z && git tag -d vX.Y.Z`), tag again and push |
 | `prensa` published, `prensa-cli` failed | Re-run the job from the Actions tab. If it stops because `prensa` X.Y.Z already exists, publish `prensa-cli` alone |
+| Published, but the `pages` job failed | The crates and the release are fine; only the site is behind. Fix the cause and run `gh workflow run pages.yml` (deploys the latest release) |
 | A published version is broken | Published versions cannot be replaced or deleted. Release a fix (patch); if the version is harmful, yank it (crates.io → crate → Versions) |
 
 Both crates only accept trusted publishing (`trustpub_only`), so a local

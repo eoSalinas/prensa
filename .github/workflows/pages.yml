@@ -1,0 +1,112 @@
+name: Pages
+
+# Deploys the web page (web/ plus the wasm package) to GitHub Pages.
+#
+# - release.yml calls it after publishing, with the new tag.
+# - By hand, only for small fixes to the page between releases:
+#     gh workflow run pages.yml              # latest release
+#     gh workflow run pages.yml -f ref=main  # a fix to the page
+#
+# The wasm is built from the same ref as the page, so a ref other than a
+# release must not change the core since the latest release; see the check
+# below.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Release tag to deploy
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag, branch or commit to deploy (empty = latest release)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One deploy at a time; a newer one waits instead of cancelling a running one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve the ref
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          ref="$INPUT_REF"
+          [ -n "$ref" ] || ref=$(gh release view --json tagName --jq .tagName)
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Deploying $ref"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0 # tags and history for the check
+
+      # A release is deployed as is (this also allows rolling back to an
+      # older one). Anything else may only change the page: the core must be
+      # identical to the latest release, or the site would run unreleased code.
+      - name: Refuse to deploy an unreleased core
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          if gh release view "$REF" > /dev/null 2>&1; then
+            echo "$REF is a release"
+            exit 0
+          fi
+          latest=$(gh release view --json tagName --jq .tagName)
+          paths=(crates/ Cargo.toml Cargo.lock)
+          if ! git diff --quiet "$latest" HEAD -- "${paths[@]}"; then
+            echo "::error::$REF changes the core since $latest. Release it, or deploy a branch made from $latest with only the page fix."
+            git diff --stat "$latest" HEAD -- "${paths[@]}"
+            exit 1
+          fi
+          echo "Core unchanged since $latest"
+
+      - name: Check there is a page
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          [ -f web/index.html ] \
+            || { echo "::error::web/index.html not found at $REF"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      # --out-dir is relative to the crate.
+      - run: wasm-pack build crates/prensa-wasm --release --target web --out-dir ../../web/pkg
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
