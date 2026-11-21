@@ -1,0 +1,17 @@
+:root {
+  --bg:        #e9ebe6;   /* page */
+  --surface:   #f7f8f4;   /* the "screen" panel */
+  --ink:       #15181b;   /* text, borders */
+  --muted:     #4b5259;   /* secondary text */
+  --line:      #8d958f;   /* hairlines, dashed drop zone */
+  --accent:    #1f4e79;   /* buttons, links, progress */
+  --on-accent: #ffffff;
+  --danger:    #8a1c1c;
+
+
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-head: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --radius: 6px;
+  --frame: 3px;
+  color-scheme: light dark;
+}
