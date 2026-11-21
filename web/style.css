@@ -341,3 +341,19 @@ dd {
   white-space: nowrap;
   border: 0;
 }
+
+@media (max-width: 30rem) {
+  .screen {
+    padding: 1rem;
+  }
+
+  dl {
+    grid-template-columns: 1fr;
+  }
+
+  dd {
+    text-align: left;
+    border-top: 0;
+    padding-top: 0;
+  }
+}
