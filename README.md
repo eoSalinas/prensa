@@ -158,6 +158,7 @@ it if you need atomic writes.
 |---|---|---|
 | `prensa` | `crates/prensa` | the engine |
 | `prensa-cli` | `crates/prensa-cli` | the `prensa` binary |
+| `prensa-wasm` | `crates/prensa-wasm` | WebAssembly bindings for the web page (not on crates.io) |
 
 ## What it does
 

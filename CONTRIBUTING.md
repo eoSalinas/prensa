@@ -62,12 +62,13 @@ book you own or one of the free ones above.
 
 ## How prensa works
 
-The repository is a Cargo workspace with two crates:
+The repository is a Cargo workspace with three crates:
 
 | Crate | Path | What it is |
 |---|---|---|
 | `prensa` | `crates/prensa` | The engine, a library. Never prints, works on any `Read + Seek` / `Write + Seek` |
 | `prensa-cli` | `crates/prensa-cli` | The `prensa` command: paths, atomic writes, progress bar, summary |
+| `prensa-wasm` | `crates/prensa-wasm` | `optimize` for JavaScript, built with `wasm-pack`; not published to crates.io |
 
 An EPUB is a zip archive. `prensa::optimize` reads it entry by entry and
 `decide()` in `crates/prensa/src/passes.rs` picks an action for each one:
