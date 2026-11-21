@@ -7,6 +7,30 @@ may break the library API).
 
 ## [Unreleased]
 
+## [0.3.0]
+
+prensa now runs in the browser: a web page optimizes a book on your own
+computer through WebAssembly, and each release deploys it to
+[GitHub Pages](https://eosalinas.github.io/prensa/). Nothing is uploaded.
+
+### Added
+
+- A web page to optimize an EPUB without installing anything: pick a book and
+  a device, set the advanced options if needed, follow the progress and
+  download `<name>-optimized.epub` with the report. prensa runs in a Web
+  Worker, so the page stays responsive (#49).
+- `prensa-wasm`, WebAssembly bindings with a JavaScript API,
+  `optimize(epub, options, onProgress)`, returning the optimized bytes and the
+  report. Not published to crates.io (#45).
+- Each release deploys the web page, built from the release tag, to GitHub
+  Pages (#48).
+
+### Changed
+
+- `image` is built with only the codecs prensa uses (JPEG, PNG, GIF, BMP,
+  WebP): a faster build and a smaller binary, with byte-identical output
+  (#44).
+
 ## [0.2.0]
 
 Images the reader could not show now show up, wide diagrams can be turned to
@@ -89,6 +113,7 @@ share one version.
   the visible text is unchanged (property-tested) and the output is a valid
   EPUB container.
 
-[Unreleased]: https://github.com/eoSalinas/prensa/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/eoSalinas/prensa/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/eoSalinas/prensa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/eoSalinas/prensa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eoSalinas/prensa/releases/tag/v0.1.0

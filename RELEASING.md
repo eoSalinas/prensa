@@ -28,7 +28,7 @@ On a branch `release/vX.Y.Z`, open a PR titled `chore: release vX.Y.Z` that:
 
 - sets `version = "X.Y.Z"` in the root `Cargo.toml` (`[workspace.package]`)
 - sets the same version on the `prensa` dependency in
-  `crates/prensa-cli/Cargo.toml`
+  `crates/prensa-cli/Cargo.toml` and `crates/prensa-wasm/Cargo.toml`
 - updates `Cargo.lock` (any `cargo build` does it)
 - moves the changes into a `## [X.Y.Z]` section of `CHANGELOG.md`, written from
   the titles of the PRs merged since the last tag, and updates the compare
