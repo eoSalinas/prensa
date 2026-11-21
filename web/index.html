@@ -23,9 +23,9 @@
       <section id="pick" aria-labelledby="pick-title">
         <h2 id="pick-title">Choose a book</h2>
         <div id="drop" class="drop">
-          <input id="file" type="file" accept=".epub,application/epub+zip">
+          <input id="file" type="file" accept=".epub,application/epub+zip" aria-describedby="file-hint">
           <label for="file">Choose an .epub file</label>
-          <span class="hint">or drop it here</span>
+          <span id="file-hint" class="hint">or drop it here</span>
         </div>
         <p id="file-name" class="hint" hidden></p>
       </section>
@@ -49,16 +49,16 @@
             </p>
             <p class="field">
               <label for="quality">JPEG quality (1 to 100)</label>
-              <input id="quality" name="quality" type="number" min="1" max="100" value="80">
+              <input id="quality" name="quality" type="number" min="1" max="100" value="80" required>
             </p>
             <p class="field">
-              <label for="sharpen">Sharpening (0 to 100)</label>
-              <input id="sharpen" name="sharpen" type="number" min="0" max="100" value="0">
+              <label for="sharpen">Sharpening (0 to 100%; 0 = off)</label>
+              <input id="sharpen" name="sharpen" type="number" min="0" max="100" value="0" required>
             </p>
             <p class="field">
               <label for="rotate">Rotation</label>
               <select id="rotate" name="rotate">
-                <option value="auto">Automatic</option>
+                <option value="auto">Automatically rotate wide images</option>
                 <option value="none">Never rotate</option>
               </select>
             </p>
@@ -97,6 +97,6 @@
     <p>prensa is open source. Not affiliated with Xteink.</p>
   </footer>
 
-
+  <script type="module" src="app.js"></script>
 </body>
 </html>
