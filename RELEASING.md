@@ -71,27 +71,29 @@ the generated notes.
 ## Fixing the site between releases
 
 Only small fixes to the page (a typo, a broken style, a wrong link); new
-features ship with a release. Merge the fix, then deploy by hand:
+features ship with a release.
 
-```sh
-gh workflow run pages.yml -f ref=main
-```
+1. **Open a PR with the fix to `main` and merge it**, as usual. The fix must
+   be on `main` first, or the next release would deploy the site without it.
+2. **Deploy.** The wasm is built from the same ref as the page, so the
+   workflow refuses a ref whose `crates/`, `Cargo.toml` or `Cargo.lock` differ
+   from the latest release: the site would run unreleased code.
+   - If `main` has no such changes since the latest release, deploy `main`:
 
-The wasm is built from the same ref as the page, so the workflow refuses a ref
-whose `crates/`, `Cargo.toml` or `Cargo.lock` differ from the latest release:
-the site would run unreleased code. If `main` already has such changes, deploy
-a `hotfix/` branch made from the latest tag with only the fix, copied from
-`main`:
+     ```sh
+     gh workflow run pages.yml -f ref=main
+     ```
 
-```sh
-git switch -c hotfix/<slug> vX.Y.Z
-git cherry-pick <fix commit on main>
-git push -u origin hotfix/<slug>
-gh workflow run pages.yml -f ref=hotfix/<slug>
-```
+   - Otherwise, deploy a `hotfix/` branch made from the latest tag, with only
+     the fix copied from `main`. It needs no PR, since the fix is already on
+     `main`; delete it after the deploy.
 
-The fix is already on `main`, so the branch needs no PR; delete it once the
-deploy is done.
+     ```sh
+     git switch -c hotfix/<slug> vX.Y.Z
+     git cherry-pick <fix commit on main>
+     git push -u origin hotfix/<slug>
+     gh workflow run pages.yml -f ref=hotfix/<slug>
+     ```
 
 `gh workflow run pages.yml` without `ref` redeploys the latest release, and
 `-f ref=vX.Y.Z` rolls back to an older one.
