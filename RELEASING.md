@@ -79,9 +79,19 @@ gh workflow run pages.yml -f ref=main
 
 The wasm is built from the same ref as the page, so the workflow refuses a ref
 whose `crates/`, `Cargo.toml` or `Cargo.lock` differ from the latest release:
-the site would run unreleased code. If `main` already has such changes, make a
-branch from the latest tag, apply only the page fix there, and deploy that
-branch with `-f ref=<branch>`.
+the site would run unreleased code. If `main` already has such changes, deploy
+a `hotfix/` branch made from the latest tag with only the fix, copied from
+`main`:
+
+```sh
+git switch -c hotfix/<slug> vX.Y.Z
+git cherry-pick <fix commit on main>
+git push -u origin hotfix/<slug>
+gh workflow run pages.yml -f ref=hotfix/<slug>
+```
+
+The fix is already on `main`, so the branch needs no PR; delete it once the
+deploy is done.
 
 `gh workflow run pages.yml` without `ref` redeploys the latest release, and
 `-f ref=vX.Y.Z` rolls back to an older one.
