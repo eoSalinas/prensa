@@ -42,3 +42,16 @@ jobs:
       - run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Update the web page to the new version. A job here rather than an
+  # `on: release` trigger in pages.yml: the release above is created with
+  # GITHUB_TOKEN, and events it creates do not start other workflows.
+  pages:
+    needs: publish
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      ref: ${{ github.ref_name }}
