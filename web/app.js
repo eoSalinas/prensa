@@ -130,6 +130,22 @@ function formatBytes(value) {
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(amount)} ${units[unitIndex]}`;
 }
 
+function formatSizeChange(originalSize, optimizedSize) {
+  const difference = originalSize - optimizedSize;
+  if (difference === 0) {
+    return "No size change";
+  }
+  if (originalSize === 0) {
+    return "Percentage unavailable";
+  }
+
+  const percentage = new Intl.NumberFormat(undefined, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(Math.abs(difference) / originalSize);
+  return difference > 0 ? `${percentage} smaller` : `${percentage} larger`;
+}
+
 function addReportRow(label, value) {
   const term = document.createElement("dt");
   term.textContent = label;
@@ -146,15 +162,20 @@ function showResult(file, bytes, report) {
   downloadLink.download = `${baseName}-optimized.epub`;
 
   const savedBytes = file.size - bytes.byteLength;
-  const savedDescription = savedBytes >= 0
-    ? `${formatBytes(savedBytes)} (${formatCount(savedBytes)} bytes)`
-    : `Output is ${formatBytes(-savedBytes)} (${formatCount(-savedBytes)} bytes) larger`;
-
+  addReportRow("File size change", formatSizeChange(file.size, bytes.byteLength));
+  addReportRow("Original file size", formatBytes(file.size));
+  addReportRow("Optimized file size", formatBytes(bytes.byteLength));
+  if (savedBytes > 0) {
+    addReportRow("Space saved", formatBytes(savedBytes));
+  } else if (savedBytes < 0) {
+    addReportRow("Additional space used", formatBytes(-savedBytes));
+  }
   addReportRow("Fonts removed", formatCount(report.fontsRemoved));
   addReportRow("Images changed", formatCount(report.imagesChanged));
   addReportRow("Images converted", formatCount(report.imagesConverted));
   addReportRow("Images rotated", formatCount(report.imagesRotated));
-  addReportRow("Bytes saved", savedDescription);
+  addReportRow("Images kept unchanged", formatCount(report.imagesKept));
+  addReportRow("Image processing failures", formatCount(report.imagesFailed));
 
   if (report.warnings.length > 0) {
     for (const warning of report.warnings) {

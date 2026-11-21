@@ -3,35 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>prensa: optimize EPUBs for your e-reader</title>
   <meta name="description" content="Optimize an EPUB for the Xteink X4 or X3 in your browser. Your file never leaves your device.">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20261121-3">
 </head>
 <body>
   <header class="site-header">
-    <a class="wordmark" href="./">prensa</a>
+    <a class="brand" href="./" aria-label="prensa home">
+      <span class="brand-mark" aria-hidden="true">P</span>
+      <span class="wordmark">prensa</span>
+    </a>
     <p>An EPUB optimizer for the CrossPoint ecosystem</p>
   </header>
 
   <main>
-    <div class="intro">
-      <h1>Make any EPUB light enough for your e-reader</h1>
-      <p>Pick a book, pick your device, download the optimized copy. Everything runs in your browser, so your file is never uploaded.</p>
-    </div>
+    <section class="intro" aria-labelledby="page-title">
+      <div class="intro-copy">
+        <p class="eyebrow">Less weight. The same reading experience.</p>
+        <h1 id="page-title">Take your books wherever you go.</h1>
+        <p class="lede">Make your EPUB light for your e-reader while keeping your data on your device.</p>
+      </div>
+      <div class="reader-visual" aria-hidden="true">
+        <div class="reader-shadow"></div>
+        <div class="reader">
+          <div class="reader-screen">
+            <span class="chapter">CHAPTER I</span>
+            <strong>A new way<br>to read</strong>
+            <span class="reader-rule"></span>
+            <p>Read more. Carry less.</p>
+            <span class="reader-page">1 / 248</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div class="screen">
       <section id="pick" aria-labelledby="pick-title">
-        <h2 id="pick-title">Choose a book</h2>
+        <div class="section-heading">
+          <span class="step">1</span>
+          <h2 id="pick-title">Choose a book</h2>
+        </div>
         <div id="drop" class="drop">
           <input id="file" type="file" accept=".epub,application/epub+zip" aria-describedby="file-hint">
-          <label for="file">Choose an .epub file</label>
+          <span class="upload-icon" aria-hidden="true">↗</span>
+          <label for="file">Choose an EPUB file</label>
           <span id="file-hint" class="hint">or drop it here</span>
         </div>
         <p id="file-name" class="hint" hidden></p>
       </section>
 
       <form id="options" aria-labelledby="opt-title">
-        <h2 id="opt-title">Choose your device</h2>
+        <div class="section-heading">
+          <span class="step">2</span>
+          <h2 id="opt-title">Choose your device</h2>
+        </div>
         <p class="field">
           <label for="device">Device</label>
           <select id="device" name="device">
@@ -41,10 +69,10 @@
         </p>
 
         <details>
-          <summary>Advanced</summary>
+          <summary>Advanced options</summary>
           <div class="grid">
             <p class="field">
-              <label for="maxSize">Max image size (px)</label>
+              <label for="maxSize">Maximum size (px)</label>
               <input id="maxSize" name="maxSize" type="number" min="100" step="10" placeholder="Device default">
             </p>
             <p class="field">
@@ -65,11 +93,17 @@
           </div>
         </details>
 
-        <button id="run" type="submit" disabled>Optimize book</button>
+        <button id="run" type="submit" disabled>
+          <span>Optimize book</span>
+          <span aria-hidden="true">→</span>
+        </button>
       </form>
 
       <section id="progress-box" aria-labelledby="prog-title" hidden>
-        <h2 id="prog-title">Optimizing</h2>
+        <div class="section-heading">
+          <span class="step">3</span>
+          <h2 id="prog-title">Optimizing</h2>
+        </div>
         <div class="meter">
           <progress id="progress" max="100" value="0" aria-labelledby="prog-title"></progress>
           <span id="percent">0%</span>
@@ -79,8 +113,12 @@
       <p id="error" role="alert" hidden></p>
 
       <section id="result" aria-labelledby="res-title" tabindex="-1" hidden>
-        <h2 id="res-title">Your book is ready</h2>
-        <a id="download" class="button" href="#">Download optimized EPUB</a>
+        <div class="section-heading">
+          <span class="step">✓</span>
+          <h2 id="res-title">Your book is ready</h2>
+        </div>
+        <a id="download" class="button" href="#"><span>Download optimized EPUB</span><span aria-hidden="true">↓</span></a>
+        <p class="hint">File size changes compare the complete EPUB, not just the images.</p>
         <dl id="report"></dl>
         <div id="warnings" hidden>
           <h3>Warnings</h3>
@@ -88,13 +126,20 @@
         </div>
       </section>
     </div>
+
+    <div class="trust-row" aria-label="Benefits">
+      <span><b>01</b> Local processing</span>
+      <span><b>02</b> Original file unchanged</span>
+      <span><b>03</b> Ready for your reader</span>
+    </div>
     
     <p id="live" class="sr-only" role="status" aria-live="polite"></p>
 
   </main>
 
   <footer class="site-footer">
-    <p>prensa is open source. Not affiliated with Xteink.</p>
+    <p><strong>prensa</strong> is open source. Not affiliated with Xteink.</p>
+    <a href="https://github.com/nilaszz/prensa" rel="noopener">View on GitHub ↗</a>
   </footer>
 
   <script type="module" src="app.js"></script>
