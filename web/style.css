@@ -272,3 +272,54 @@ progress::-moz-progress-bar {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+#error {
+  color: var(--danger);
+  font-weight: 600;
+  border: 2px solid var(--danger);
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+}
+
+#result {
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+}
+
+#result:focus {
+  outline: none;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  width: 100%;
+  margin: .5rem 0 0;
+}
+
+dt,
+dd {
+  padding: .4rem 0;
+  border-top: 1px solid var(--line);
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+#warnings {
+  width: 100%;
+}
+
+#warning-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
