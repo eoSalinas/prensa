@@ -47,3 +47,16 @@ p { margin: 0; }
 
 .intro { padding: 2.5rem 0 1.5rem; display: grid; gap: .75rem; }
 .intro p { color: var(--muted); max-width: 52ch; }
+
+.screen {
+  background: var(--surface);
+  border: var(--frame) solid var(--ink);
+  border-radius: calc(var(--radius) * 2);
+  padding: 1.5rem;
+  display: grid;
+  gap: 1.75rem;
+}
+.screen > section + form,
+.screen > form + section { border-top: 1px solid var(--line); padding-top: 1.5rem; }
+.screen > form { border-top: 1px solid var(--line); padding-top: 1.5rem; }
+
