@@ -42,6 +42,30 @@
           </select>
         </p>
 
+        <details>
+          <summary>Advanced</summary>
+          <div class="grid">
+            <p class="field">
+              <label for="maxSize">Max image size (px)</label>
+              <input id="maxSize" name="maxSize" type="number" min="100" step="10" placeholder="Device default">
+            </p>
+            <p class="field">
+              <label for="quality">JPEG quality (1 to 100)</label>
+              <input id="quality" name="quality" type="number" min="1" max="100" value="80">
+            </p>
+            <p class="field">
+              <label for="sharpen">Sharpening (0 to 100)</label>
+              <input id="sharpen" name="sharpen" type="number" min="0" max="100" value="0">
+            </p>
+            <p class="field">
+              <label for="rotate">Rotation</label>
+              <select id="rotate" name="rotate">
+                <option value="auto">Automatic</option>
+                <option value="none">Never rotate</option>
+              </select>
+            </p>
+          </div>
+        </details>
 
         <button id="run" type="submit" disabled>Optimize book</button>
       </form>
