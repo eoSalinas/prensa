@@ -204,6 +204,7 @@ it if you need atomic writes.
   to read at 440 px. `--rotate cw` helps up to 1.67×; panoramic diagrams stay
   small.
 - Thin light-gray lines can look dashed after the device's 4-level dithering.
+- Images are converted to grayscale, so color e-ink screens (e.g. Kobo Libra Colour) lose color
 
 ## Credits
 
