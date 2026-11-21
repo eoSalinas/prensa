@@ -75,3 +75,16 @@ summary { cursor: pointer; font-weight: 600; padding: .25rem 0; width: fit-conte
 .grid { display: grid; gap: 1rem; margin-top: .75rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
 
 
+.drop {
+  position: relative; display: grid; justify-items: center; gap: .25rem;
+  padding: 2.25rem 1rem; text-align: center;
+  border: 2px dashed var(--line); border-radius: var(--radius);
+}
+.drop.over { border-color: var(--accent); border-style: solid; }
+.drop input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
+.drop label { color: var(--accent); text-decoration: underline; text-underline-offset: .2em; }
+.drop:focus-within { outline: 3px solid var(--ink); outline-offset: 3px; }
+#file-name { margin-top: .75rem; }
+
+
+
