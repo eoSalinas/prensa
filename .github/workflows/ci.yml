@@ -22,6 +22,24 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # The web bindings: tests run in Node, and the package the web page uses
+  # must build.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - run: cargo clippy -p prensa-wasm --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - run: wasm-pack test --node crates/prensa-wasm
+      - run: wasm-pack build crates/prensa-wasm --release --target web
+
   # Keep in sync with `rust-version` in the root Cargo.toml.
   msrv:
     runs-on: ubuntu-latest
