@@ -70,6 +70,15 @@
         <button id="run" type="submit" disabled>Optimize book</button>
       </form>
 
+      <section id="progress-box" aria-labelledby="prog-title" hidden>
+        <h2 id="prog-title">Optimizing</h2>
+        <div class="meter">
+          <progress id="progress" max="100" value="0" aria-labelledby="prog-title"></progress>
+          <span id="percent">0%</span>
+        </div>
+      </section>
+
+
     </div>
 
 
