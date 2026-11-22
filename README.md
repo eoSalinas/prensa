@@ -11,6 +11,9 @@ It is tuned on an **Xteink X4 Pro** running the
 [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) firmware,
 but the output is still a standard EPUB that opens in any reader.
 
+[Optimize an EPUB in your browser](https://eosalinas.github.io/prensa/).
+The book is processed on your device and is never uploaded.
+
 ## Before and after
 
 Photos of the same page on an Xteink X4 Pro (CrossPoint), original book on the
