@@ -45,18 +45,6 @@ to read them.
 
 </details>
 
-### Unreadable → readable
-
-Large diagrams are downscaled on the device with a simple fixed-point scaler,
-which mangles small text. `prensa` does the same downscale on your computer
-with a high-quality filter and light sharpening.
-
-| Before | After |
-|---|---|
-| ![Mastering Bitcoin, Figure 2-2, before: jagged text](docs/images/mastering-bitcoin-fig2-2-before.jpg) | ![Mastering Bitcoin, Figure 2-2, after: clean text](docs/images/mastering-bitcoin-fig2-2-after.jpg) |
-
-*Mastering Bitcoin, Figure 2-2.*
-
 ### Blurry → sharp
 
 CrossPoint decodes progressive JPEGs at 1/8 resolution. `prensa` re-encodes
