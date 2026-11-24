@@ -21,6 +21,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The CLI turns on prensa's `parallel` feature for the whole workspace;
+      # test prensa alone too, as it builds by default (one image at a time).
+      - run: cargo test -p prensa
 
   # The web bindings: tests run in Node, and the package the web page uses
   # must build.
