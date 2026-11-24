@@ -131,6 +131,8 @@ A few conventions:
 - Add tests for new behavior. A property test is welcome when the input space
   is large.
 - Public library items need doc comments.
+- **Making prensa faster?** Run `cargo bench -p prensa` before and after, and
+  put both numbers in the PR. See [docs/benchmarks.md](docs/benchmarks.md).
 - **Breaking the library API?** Bump the version in the same PR (on 0.x, the
   minor). The `semver` check tells you when this applies; see
   [RELEASING.md](RELEASING.md#versioning) for why.

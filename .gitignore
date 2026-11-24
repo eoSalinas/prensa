@@ -2,3 +2,4 @@
 /experiments/
 /crates/prensa-wasm/pkg/
 /web/pkg/
+/crates/prensa/benches/books/
