@@ -9,8 +9,8 @@ the original. It is tuned on an **Xteink X4 Pro** running the
 [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader) firmware,
 but the output is a standard EPUB that opens in any reader.
 
-- **In the browser:** [eosalinas.github.io/prensa](https://eosalinas.github.io/prensa/).
-  The book is processed on your device and is never uploaded.
+- **In the browser:** [optimize an EPUB online](https://eosalinas.github.io/prensa/),
+  nothing is uploaded.
 - **In the terminal:** `cargo install prensa-cli`, then
   `prensa book.epub book-optimized.epub`.
 
