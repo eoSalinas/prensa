@@ -28,5 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 prints and returns a `Report`. Use `optimize_with_progress` to drive a
 progress bar.
 
+Errors are a `prensa::Error`: `InvalidZip`, `Malformed { entry, .. }` (an
+entry that must be rewritten could not be parsed) or `Io`. `optimize` writes
+straight to `output`; write to a temporary file and rename it if you need
+atomic writes.
+
 Enable the `parallel` feature to optimize images on all cores (the CLI does);
 the output is the same either way.
