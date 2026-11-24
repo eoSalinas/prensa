@@ -62,6 +62,10 @@ them as baseline JPEGs.
 |---|---|---|---|
 | Pro Git (2.1.450) | 13.99 MB | 2.68 MB | −81% |
 | Mastering Bitcoin (3rd ed.) | 6.6 MB | 2.0 MB | −70% |
+| The Wonderful Wizard of Oz ([Gutenberg #43936](https://www.gutenberg.org/ebooks/43936)) | 10.71 MB | 9.69 MB | −10% |
+
+The reduction depends on how heavy the images are: Oz's illustrations are
+already small.
 
 ## Install
 
