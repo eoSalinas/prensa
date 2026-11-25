@@ -17,7 +17,7 @@ use anyhow::Result;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
 use image::imageops::FilterType;
-use image::{DynamicImage, ExtendedColorType, GrayImage, ImageEncoder, ImageFormat, Luma};
+use image::{DynamicImage, ExtendedColorType, GrayImage, ImageEncoder, ImageFormat};
 
 use crate::{Options, Rotation};
 
@@ -201,16 +201,43 @@ pub(crate) fn rotation_for(width: u32, height: u32, opts: &Options) -> Option<Ro
     (turned >= upright * MIN_ROTATION_GAIN).then_some(rotation)
 }
 
+/// Grayscale with transparency flattened onto white.
+///
+/// Runs once per pixel of every image with alpha, so it works on the raw
+/// buffer in integer math: `f32::round` is a libm call on x86-64.
+fn flatten_alpha(img: &DynamicImage) -> GrayImage {
+    let owned;
+    let rgba = match img {
+        DynamicImage::ImageRgba8(rgba) => rgba,
+        _ => {
+            owned = img.to_rgba8();
+            &owned
+        }
+    };
+    let gray = rgba
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&p| flatten_pixel(p))
+        .collect();
+    GrayImage::from_raw(rgba.width(), rgba.height(), gray).expect("one gray byte per pixel")
+}
+
+/// Rec. 601 luma of an RGBA pixel blended onto white by its alpha, rounded.
+fn flatten_pixel([r, g, b, a]: [u8; 4]) -> u8 {
+    let [r, g, b, a] = [r, g, b, a].map(u32::from);
+    // Luma in thousandths (0..=255_000), so the weights stay exact.
+    let luma = 299 * r + 587 * g + 114 * b;
+    // luma * a/255 + 255 * (1 - a/255), over 255 * 1000, rounded half up.
+    // At most 255_000 * 255 + 127_500, well within u32.
+    ((luma * a + 255_000 * (255 - a) + 127_500) / 255_000) as u8
+}
+
 /// Grayscale with alpha flattened onto white, downscaled to fit the box.
 fn to_screen_gray(img: &DynamicImage, rotation: Option<Rotation>, opts: &Options) -> GrayImage {
     let gray = if img.color().has_alpha() {
-        let rgba = img.to_rgba8();
-        GrayImage::from_fn(img.width(), img.height(), |x, y| {
-            let [r, g, b, a] = rgba.get_pixel(x, y).0;
-            let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-            let alpha = a as f32 / 255.0;
-            Luma([(luma * alpha + 255.0 * (1.0 - alpha)).round() as u8])
-        })
+        flatten_alpha(img)
     } else {
         img.to_luma8()
     };
@@ -291,7 +318,7 @@ pub(crate) fn optimize(kind: Kind, data: &[u8], opts: &Options) -> Result<Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Rgb, RgbImage, Rgba, RgbaImage};
+    use image::{Luma, LumaA, Rgb, RgbImage, Rgba, RgbaImage};
     use std::io::Cursor;
 
     fn decode(data: &[u8]) -> DynamicImage {
@@ -424,6 +451,45 @@ mod tests {
             .unwrap();
         let gray = decode(&out.bytes).to_luma8();
         assert!(gray.pixels().all(|p| p.0[0] == 255));
+    }
+
+    #[test]
+    fn flattening_matches_the_float_formula() {
+        // The formula this replaced, in f32 as it was written.
+        let float = |[r, g, b, a]: [u8; 4]| {
+            let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            let alpha = a as f32 / 255.0;
+            (luma * alpha + 255.0 * (1.0 - alpha)).round() as u8
+        };
+        let steps = (0..=255).step_by(15).chain([1, 128, 254]);
+        for r in steps.clone() {
+            for g in steps.clone() {
+                for b in steps.clone() {
+                    for a in 0..=255 {
+                        let px = [r, g, b, a];
+                        assert!(
+                            flatten_pixel(px).abs_diff(float(px)) <= 1,
+                            "{px:?}: {} vs {}",
+                            flatten_pixel(px),
+                            float(px)
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(flatten_pixel([0, 0, 0, 0]), 255);
+        assert_eq!(flatten_pixel([0, 0, 0, 255]), 0);
+        assert_eq!(flatten_pixel([255, 255, 255, 255]), 255);
+    }
+
+    #[test]
+    fn flattens_gray_with_alpha() {
+        // Not RGBA8, so it goes through the conversion.
+        let img = DynamicImage::ImageLumaA8(image::ImageBuffer::from_fn(2, 1, |x, _| {
+            LumaA([0, if x == 0 { 0 } else { 255 }])
+        }));
+        let gray = flatten_alpha(&img);
+        assert_eq!(gray.as_raw(), &[255, 0]);
     }
 
     #[test]
