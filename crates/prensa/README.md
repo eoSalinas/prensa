@@ -27,3 +27,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `optimize` works on any `Read + Seek` input and `Write + Seek` output, never
 prints and returns a `Report`. Use `optimize_with_progress` to drive a
 progress bar.
+
+Enable the `parallel` feature to optimize images on all cores (the CLI does);
+the output is the same either way.

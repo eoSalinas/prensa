@@ -13,6 +13,13 @@
 //! println!("{} image(s) optimized", report.images_changed);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! # Features
+//!
+//! - `parallel` (off by default): optimize images on all cores with
+//!   [rayon](https://docs.rs/rayon). The output is identical either way. Off
+//!   by default so the library adds no threads where they are unavailable,
+//!   such as WebAssembly in the browser.
 
 mod error;
 mod fonts;
@@ -96,17 +103,55 @@ fn malformed(entry: &str, source: Source) -> Error {
 /// gained nothing (`None`), or not readable as an image (`Err`, a warning).
 type ImageResult = anyhow::Result<Option<Optimized>>;
 
-/// Read image entry `i` and run the images pass on it.
-fn optimize_image<R: Read + Seek>(
+/// An image entry to optimize: its index, kind and bytes (`None` when it is
+/// larger than [`MAX_ENTRY_SIZE`]).
+type ImageJob = (usize, images::Kind, Option<Vec<u8>>);
+
+/// Read image entries for [`optimize_images`]. The archive needs `&mut`, so
+/// reads stay sequential.
+fn read_images<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
-    i: usize,
-    kind: images::Kind,
-    opts: &Options,
-) -> Result<ImageResult, Error> {
-    Ok(match read_entry(archive, i)? {
-        Some(bytes) => images::optimize(kind, &bytes, opts),
-        None => Err(anyhow::anyhow!(too_large())),
-    })
+    images: impl IntoIterator<Item = (usize, images::Kind)>,
+) -> Result<Vec<ImageJob>, Error> {
+    images
+        .into_iter()
+        .map(|(i, kind)| Ok((i, kind, read_entry(archive, i)?)))
+        .collect()
+}
+
+/// Run the images pass on each job, in parallel with the `parallel` feature.
+/// Results come back in the jobs' order.
+fn optimize_images(jobs: Vec<ImageJob>, opts: &Options) -> Vec<(usize, ImageResult)> {
+    let run = |(i, kind, bytes): ImageJob| {
+        let result = match bytes {
+            Some(bytes) => images::optimize(kind, &bytes, opts),
+            None => Err(anyhow::anyhow!(too_large())),
+        };
+        (i, result)
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        jobs.into_par_iter().map(run).collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        jobs.into_iter().map(run).collect()
+    }
+}
+
+/// How many images are read and optimized together. Twice the threads keeps
+/// every core busy when images differ in size, while holding only a few
+/// images in memory at once.
+fn batch_size() -> usize {
+    #[cfg(feature = "parallel")]
+    {
+        rayon::current_num_threads() * 2
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        1
+    }
 }
 
 /// A warning for an entry copied unchanged.
@@ -143,12 +188,30 @@ where
 /// after the last entry; treat the return of this function as completion.
 ///
 /// The library never prints; front ends use this to draw a progress bar.
-/// Images take most of the time, so progress is not linear in entries.
+/// Images take most of the time, so progress is not linear in entries; with
+/// the `parallel` feature, it pauses at an image while that image and the
+/// next ones are optimized together, then moves past them at once.
 pub fn optimize_with_progress<R, W, F>(
     input: R,
     output: W,
     opts: &Options,
+    on_progress: F,
+) -> Result<Report, Error>
+where
+    R: Read + Seek,
+    W: Write + Seek,
+    F: FnMut(Progress<'_>),
+{
+    optimize_in_batches(input, output, opts, on_progress, batch_size())
+}
+
+/// [`optimize_with_progress`] with images optimized `batch` at a time.
+fn optimize_in_batches<R, W, F>(
+    input: R,
+    output: W,
+    opts: &Options,
     mut on_progress: F,
+    batch: usize,
 ) -> Result<Report, Error>
 where
     R: Read + Seek,
@@ -196,7 +259,7 @@ where
     // may change format are converted here; for JPEG and PNG, which keep their
     // name, the header is enough to know whether they will be turned.
     let mut taken: HashSet<String> = entries.iter().map(|(n, _)| n.to_lowercase()).collect();
-    let mut converted: HashMap<usize, ImageResult> = HashMap::new();
+    let mut to_convert = Vec::new();
     for (i, (name, _)) in entries.iter().enumerate() {
         let Some(kind) = images::kind_of(name) else {
             continue;
@@ -211,7 +274,15 @@ where
             }
             continue;
         }
-        let result = optimize_image(&mut archive, i, kind, opts)?;
+        to_convert.push((i, kind));
+    }
+    // All at once: renames are needed before anything is written, and books
+    // rarely have many of these formats. Renames are then chosen in archive
+    // order, as if converted one by one.
+    let mut converted: HashMap<usize, ImageResult> = HashMap::new();
+    let jobs = read_images(&mut archive, to_convert)?;
+    for (i, result) in optimize_images(jobs, opts) {
+        let name = &entries[i].0;
         if let Ok(Some(image)) = &result {
             let format = image.format;
             book.renames
@@ -256,6 +327,19 @@ where
             !n.ends_with('/') && !matches!(decide(n, &book), Action::Skip | Action::RemoveFont)
         })
         .collect();
+
+    // JPEG and PNG images left, in archive order. Reaching the first one not
+    // yet optimized reads it and the next ones, and optimizes them together.
+    let pending: Vec<(usize, images::Kind)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !converted.contains_key(i))
+        .filter_map(|(i, (name, _))| match decide(name, &book) {
+            Action::Image(kind) => Some((i, kind)),
+            _ => None,
+        })
+        .collect();
+    let mut pending = pending.chunks(batch.max(1));
 
     let total = entries.len();
     for (i, (name, size)) in entries.iter().enumerate() {
@@ -310,10 +394,15 @@ where
             }
             Action::Image(kind) => {
                 report.image_bytes_before += size;
-                let result = match converted.remove(&i) {
-                    Some(result) => result,
-                    None => optimize_image(&mut archive, i, kind, opts)?,
-                };
+                if !converted.contains_key(&i) {
+                    let next = pending.next().unwrap_or_default();
+                    debug_assert_eq!(next.first(), Some(&(i, kind)));
+                    let jobs = read_images(&mut archive, next.iter().copied())?;
+                    converted.extend(optimize_images(jobs, opts));
+                }
+                let result = converted
+                    .remove(&i)
+                    .expect("optimized with its batch, in archive order");
                 match result {
                     Ok(Some(image)) => {
                         report.images_changed += 1;
@@ -714,6 +803,64 @@ mod tests {
                 assert!(source.to_string().contains("larger than"), "{source}");
             }
             other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn batch_size_does_not_change_the_output() {
+        let image = |w: u32, format: image::ImageFormat| {
+            let img = image::RgbImage::from_fn(w, 300, |x, y| {
+                image::Rgb([(x % 256) as u8, (y % 256) as u8, 90])
+            });
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgb8(img)
+                .write_to(&mut Cursor::new(&mut out), format)
+                .unwrap();
+            out
+        };
+        let (big_png, small_png) = (
+            image(900, image::ImageFormat::Png),
+            image(40, image::ImageFormat::Png),
+        );
+        let (big_jpg, small_jpg) = (
+            image(900, image::ImageFormat::Jpeg),
+            image(40, image::ImageFormat::Jpeg),
+        );
+        let figure = webp(4, 4);
+        // Images (changed, kept, failed, converted) between other entries.
+        let input = zip_of(&[
+            ("OEBPS/a.png", &big_png),
+            (
+                "OEBPS/ch1.xhtml",
+                br#"<html><body><img src="e.webp"/></body></html>"#,
+            ),
+            ("OEBPS/b.jpg", &big_jpg),
+            ("OEBPS/c.png", &small_png),
+            ("OEBPS/broken.png", b"not a png"),
+            ("OEBPS/style.css", b"p { margin: 0 }"),
+            ("OEBPS/d.jpg", &small_jpg),
+            ("OEBPS/e.webp", &figure),
+            ("OEBPS/f.png", &big_png),
+        ]);
+
+        let run = |batch| {
+            let mut output = Cursor::new(Vec::new());
+            let mut progress = Vec::new();
+            let report = optimize_in_batches(
+                Cursor::new(&input),
+                &mut output,
+                &Options::default(),
+                |p| progress.push((p.done, p.entry.to_owned())),
+                batch,
+            )
+            .unwrap();
+            (output.into_inner(), report, progress)
+        };
+        let one_by_one = run(1);
+        assert_eq!(one_by_one.1.images_failed, 1);
+        assert_eq!(one_by_one.1.images_converted, 1);
+        for batch in [2, 3, 100] {
+            assert_eq!(run(batch), one_by_one, "batch {batch}");
         }
     }
 
