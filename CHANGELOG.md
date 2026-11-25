@@ -7,6 +7,26 @@ may break the library API).
 
 ## [Unreleased]
 
+## [0.4.0]
+
+prensa is about three times faster: the CLI optimizes images on all cores, and
+books with transparent images are quicker even on one. The output is
+byte-identical to 0.3.0.
+
+### Added
+
+- A `parallel` feature on `prensa`, off by default, that optimizes images on
+  all cores with rayon. `prensa-cli` turns it on: Pro Git goes from 4.1 s to
+  1.3 s on 22 threads. Each thread holds a decoded image, so peak memory grows
+  with the thread count; `RAYON_NUM_THREADS` limits it. The web page stays
+  single-threaded (#69).
+- The web page has a favicon (#57).
+
+### Changed
+
+- Images with transparency are flattened onto white with integer math instead
+  of per-pixel floats: Pro Git is 18% faster on one thread (#67).
+
 ## [0.3.0]
 
 prensa now runs in the browser: a web page optimizes a book on your own
@@ -113,7 +133,8 @@ share one version.
   the visible text is unchanged (property-tested) and the output is a valid
   EPUB container.
 
-[Unreleased]: https://github.com/eoSalinas/prensa/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/eoSalinas/prensa/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/eoSalinas/prensa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/eoSalinas/prensa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/eoSalinas/prensa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eoSalinas/prensa/releases/tag/v0.1.0
