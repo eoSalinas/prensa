@@ -23,7 +23,7 @@
 
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="preload" href="fonts/literata.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=20261126-3">
+  <link rel="stylesheet" href="style.css?v=20261126-4">
 </head>
 <body>
   <a class="skip-link" href="#tool">Skip to the optimizer</a>
@@ -120,6 +120,7 @@
 
           <div id="progress-box" class="progress" hidden>
             <p id="prog-title" class="progress-label">Optimizing…</p>
+            <p id="prog-file" class="file-name"></p>
             <div class="meter">
               <progress id="progress" max="100" value="0" aria-labelledby="prog-title"></progress>
               <span id="percent">0%</span>
@@ -130,6 +131,7 @@
 
           <section id="result" class="result" aria-labelledby="res-title" tabindex="-1" hidden>
             <h2 id="res-title" class="result-title">Your book is ready</h2>
+            <p id="result-file" class="file-name"></p>
             <p class="result-sizes">
               <span id="size-before"></span>
               <span class="arrow" aria-label="to">→</span>
@@ -150,9 +152,11 @@
               <ul id="warning-list"></ul>
             </div>
             <!-- Feedback link (#61) goes here. -->
+
+            <button id="again" class="button button--secondary" type="button">Optimize another book</button>
           </section>
 
-          <p class="status-bar" aria-hidden="true"><span>▮ 100%</span><span>prensa</span><span>1/1</span></p>
+          <p class="status-bar" aria-hidden="true"><span>▮ 100%</span><span>prensa</span><span id="page-number">1/2</span></p>
         </div>
       </div>
     </section>

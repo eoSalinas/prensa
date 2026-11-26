@@ -12,6 +12,10 @@ const progress = document.querySelector("#progress");
 const percent = document.querySelector("#percent");
 const errorBox = document.querySelector("#error");
 const resultBox = document.querySelector("#result");
+const progressFile = document.querySelector("#prog-file");
+const resultFile = document.querySelector("#result-file");
+const againButton = document.querySelector("#again");
+const pageNumber = document.querySelector("#page-number");
 const sizeBefore = document.querySelector("#size-before");
 const sizeAfter = document.querySelector("#size-after");
 const resultSummary = document.querySelector("#result-summary");
@@ -26,8 +30,18 @@ let worker = null;
 let downloadUrl = null;
 let busy = false;
 
+// The reader shows one screen at a time: the form ("form"), the progress
+// ("progress") or the result ("result").
+function showScreen(name) {
+  optionsForm.hidden = name !== "form";
+  progressBox.hidden = name !== "progress";
+  resultBox.hidden = name !== "result";
+  pageNumber.textContent = name === "result" ? "2/2" : "1/2";
+}
+
 function clearResult() {
   resultBox.hidden = true;
+  resultFile.textContent = "";
   sizeBefore.textContent = "";
   sizeAfter.textContent = "";
   resultSummary.textContent = "";
@@ -65,12 +79,10 @@ function setBusy(value) {
   busy = value;
   fileInput.disabled = value;
   runButton.disabled = value || selectedFile === null;
-  runButton.textContent = value ? "Optimizing…" : "Optimize book";
   if (value) {
     resetProgress();
-    progressBox.hidden = false;
-  } else {
-    progressBox.hidden = true;
+    progressFile.textContent = selectedFile?.name ?? "";
+    showScreen("progress");
   }
 }
 
@@ -139,7 +151,7 @@ function formatBytes(value) {
 function formatSizeChange(originalSize, optimizedSize) {
   const difference = originalSize - optimizedSize;
   if (difference === 0) {
-    return "same size";
+    return "Same size";
   }
   if (originalSize === 0) {
     return null;
@@ -149,10 +161,6 @@ function formatSizeChange(originalSize, optimizedSize) {
     maximumFractionDigits: 0,
   }).format(Math.abs(difference) / originalSize);
   return difference > 0 ? `${percentage} smaller` : `${percentage} larger`;
-}
-
-function plural(count, one, many) {
-  return `${formatCount(count)} ${count === 1 ? one : many}`;
 }
 
 function addReportRow(label, value) {
@@ -173,21 +181,8 @@ function showResult(file, bytes, report) {
   sizeBefore.textContent = formatBytes(file.size);
   sizeAfter.textContent = formatBytes(bytes.byteLength);
 
-  // One line people can read (and share) at a glance.
-  const summary = [];
-  const change = formatSizeChange(file.size, bytes.byteLength);
-  if (change !== null) {
-    summary.push(change);
-  }
-  if (report.imagesChanged > 0) {
-    summary.push(`${plural(report.imagesChanged, "image", "images")} optimized`);
-  }
-  if (report.fontsRemoved > 0) {
-    summary.push(`${plural(report.fontsRemoved, "font", "fonts")} removed`);
-  }
-  resultSummary.textContent = summary.length > 0
-    ? summary.join(" · ")
-    : "Nothing needed to change.";
+  // Only the size change here; the counts are in the details below.
+  resultSummary.textContent = formatSizeChange(file.size, bytes.byteLength) ?? "";
 
   // The details list only what happened.
   const rows = [
@@ -217,7 +212,8 @@ function showResult(file, bytes, report) {
     warningsBox.hidden = false;
   }
 
-  resultBox.hidden = false;
+  resultFile.textContent = file.name;
+  showScreen("result");
   resultBox.focus();
   liveRegion.textContent = `Your book is ready: ${sizeBefore.textContent} to ${sizeAfter.textContent}.`;
 }
@@ -232,8 +228,17 @@ function stopWorker() {
 function finishWithError(message) {
   stopWorker();
   setBusy(false);
+  showScreen("form");
   showError(message);
 }
+
+againButton.addEventListener("click", () => {
+  fileInput.value = "";
+  selectFile(null);
+  showScreen("form");
+  fileInput.focus();
+  liveRegion.textContent = "Choose another book.";
+});
 
 fileInput.addEventListener("change", () => {
   selectFile(fileInput.files?.[0] ?? null);
