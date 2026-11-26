@@ -285,14 +285,19 @@ h1 {
 
 /* Like CrossPoint's status bar at the bottom of the page. */
 .status-bar {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
   margin-top: auto;
   padding-top: .6rem;
   border-top: 1px solid var(--line);
   color: var(--muted);
   font: 500 .72rem/1 var(--sans);
   font-variant-numeric: tabular-nums;
+}
+
+.status-bar span:last-child {
+  text-align: right;
 }
 
 .step {
