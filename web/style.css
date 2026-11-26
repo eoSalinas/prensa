@@ -148,14 +148,8 @@ main,
   text-decoration: none;
 }
 
-.brand-mark {
-  width: 1.9rem;
-  height: 1.9rem;
-  filter: grayscale(1) brightness(.55);
-}
-
 .wordmark {
-  font-size: 1.5rem;
+  font-size: 1.7rem;
   font-weight: 700;
   letter-spacing: -.02em;
 }
