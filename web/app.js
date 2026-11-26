@@ -3,7 +3,6 @@ const dropZone = document.querySelector("#drop");
 const fileName = document.querySelector("#file-name");
 const optionsForm = document.querySelector("#options");
 const runButton = document.querySelector("#run");
-const deviceInput = document.querySelector("#device");
 const maxSizeInput = document.querySelector("#maxSize");
 const qualityInput = document.querySelector("#quality");
 const sharpenInput = document.querySelector("#sharpen");
@@ -13,6 +12,9 @@ const progress = document.querySelector("#progress");
 const percent = document.querySelector("#percent");
 const errorBox = document.querySelector("#error");
 const resultBox = document.querySelector("#result");
+const sizeBefore = document.querySelector("#size-before");
+const sizeAfter = document.querySelector("#size-after");
+const resultSummary = document.querySelector("#result-summary");
 const downloadLink = document.querySelector("#download");
 const reportList = document.querySelector("#report");
 const warningsBox = document.querySelector("#warnings");
@@ -26,6 +28,9 @@ let busy = false;
 
 function clearResult() {
   resultBox.hidden = true;
+  sizeBefore.textContent = "";
+  sizeAfter.textContent = "";
+  resultSummary.textContent = "";
   reportList.replaceChildren();
   warningList.replaceChildren();
   warningsBox.hidden = true;
@@ -51,53 +56,54 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function resetProgress() {
+  progress.value = 0;
+  percent.textContent = "0%";
+}
+
 function setBusy(value) {
   busy = value;
   fileInput.disabled = value;
   runButton.disabled = value || selectedFile === null;
-  progressBox.hidden = !value && progress.value === 0;
+  runButton.textContent = value ? "Optimizing…" : "Optimize book";
   if (value) {
-    progress.value = 0;
-    percent.textContent = "0%";
+    resetProgress();
     progressBox.hidden = false;
+  } else {
+    progressBox.hidden = true;
   }
 }
 
 function selectFile(file) {
   clearError();
   clearResult();
-  progress.value = 0;
-  percent.textContent = "0%";
+  resetProgress();
   progressBox.hidden = true;
   liveRegion.textContent = "";
 
-  if (!file) {
+  if (!file || !file.name.toLowerCase().endsWith(".epub")) {
     selectedFile = null;
     fileName.hidden = true;
     fileName.textContent = "";
+    dropZone.classList.remove("has-file");
     runButton.disabled = true;
-    return;
-  }
-
-  if (!file.name.toLowerCase().endsWith(".epub")) {
-    selectedFile = null;
-    fileName.hidden = true;
-    fileName.textContent = "";
-    runButton.disabled = true;
-    showError("Choose a file with the .epub extension.");
+    if (file) {
+      showError("Choose a file with the .epub extension.");
+    }
     return;
   }
 
   selectedFile = file;
-  fileName.textContent = file.name;
+  fileName.textContent = `${file.name} · ${formatBytes(file.size)}`;
   fileName.hidden = false;
+  dropZone.classList.add("has-file");
   runButton.disabled = busy;
   liveRegion.textContent = `${file.name} selected.`;
 }
 
 function makeOptions() {
   const options = {
-    device: deviceInput.value,
+    device: optionsForm.elements.device.value,
     jpegQuality: Number(qualityInput.value),
     sharpen: Number(sharpenInput.value) === 0
       ? null
@@ -133,17 +139,20 @@ function formatBytes(value) {
 function formatSizeChange(originalSize, optimizedSize) {
   const difference = originalSize - optimizedSize;
   if (difference === 0) {
-    return "No size change";
+    return "same size";
   }
   if (originalSize === 0) {
-    return "Percentage unavailable";
+    return null;
   }
-
   const percentage = new Intl.NumberFormat(undefined, {
     style: "percent",
-    maximumFractionDigits: 1,
+    maximumFractionDigits: 0,
   }).format(Math.abs(difference) / originalSize);
   return difference > 0 ? `${percentage} smaller` : `${percentage} larger`;
+}
+
+function plural(count, one, many) {
+  return `${formatCount(count)} ${count === 1 ? one : many}`;
 }
 
 function addReportRow(label, value) {
@@ -161,21 +170,43 @@ function showResult(file, bytes, report) {
   downloadLink.href = downloadUrl;
   downloadLink.download = `${baseName}-optimized.epub`;
 
-  const savedBytes = file.size - bytes.byteLength;
-  addReportRow("File size change", formatSizeChange(file.size, bytes.byteLength));
-  addReportRow("Original file size", formatBytes(file.size));
-  addReportRow("Optimized file size", formatBytes(bytes.byteLength));
-  if (savedBytes > 0) {
-    addReportRow("Space saved", formatBytes(savedBytes));
-  } else if (savedBytes < 0) {
-    addReportRow("Additional space used", formatBytes(-savedBytes));
+  sizeBefore.textContent = formatBytes(file.size);
+  sizeAfter.textContent = formatBytes(bytes.byteLength);
+
+  // One line people can read (and share) at a glance.
+  const summary = [];
+  const change = formatSizeChange(file.size, bytes.byteLength);
+  if (change !== null) {
+    summary.push(change);
   }
-  addReportRow("Fonts removed", formatCount(report.fontsRemoved));
-  addReportRow("Images changed", formatCount(report.imagesChanged));
-  addReportRow("Images converted", formatCount(report.imagesConverted));
-  addReportRow("Images rotated", formatCount(report.imagesRotated));
-  addReportRow("Images kept unchanged", formatCount(report.imagesKept));
-  addReportRow("Image processing failures", formatCount(report.imagesFailed));
+  if (report.imagesChanged > 0) {
+    summary.push(`${plural(report.imagesChanged, "image", "images")} optimized`);
+  }
+  if (report.fontsRemoved > 0) {
+    summary.push(`${plural(report.fontsRemoved, "font", "fonts")} removed`);
+  }
+  resultSummary.textContent = summary.length > 0
+    ? summary.join(" · ")
+    : "Nothing needed to change.";
+
+  // The details list only what happened.
+  const rows = [
+    ["Images optimized", report.imagesChanged],
+    ["Converted to JPEG or PNG", report.imagesConverted],
+    ["Turned to fill the screen", report.imagesRotated],
+    ["Moved out of chapters", report.imagesExtracted],
+    ["Kept as they were", report.imagesKept],
+    ["Could not be processed", report.imagesFailed],
+    ["Fonts removed", report.fontsRemoved],
+  ];
+  if (report.imageBytesBefore > 0) {
+    addReportRow("Images", `${formatBytes(report.imageBytesBefore)} → ${formatBytes(report.imageBytesAfter)}`);
+  }
+  for (const [label, count] of rows) {
+    if (count > 0) {
+      addReportRow(label, formatCount(count));
+    }
+  }
 
   if (report.warnings.length > 0) {
     for (const warning of report.warnings) {
@@ -188,7 +219,7 @@ function showResult(file, bytes, report) {
 
   resultBox.hidden = false;
   resultBox.focus();
-  liveRegion.textContent = "Optimization complete. Your optimized book is ready to download.";
+  liveRegion.textContent = `Your book is ready: ${sizeBefore.textContent} to ${sizeAfter.textContent}.`;
 }
 
 function stopWorker() {
@@ -201,7 +232,6 @@ function stopWorker() {
 function finishWithError(message) {
   stopWorker();
   setBusy(false);
-  progressBox.hidden = true;
   showError(message);
 }
 
@@ -264,9 +294,6 @@ optionsForm.addEventListener("submit", async (event) => {
 
       if (message.type === "result") {
         stopWorker();
-        progress.value = 100;
-        percent.textContent = "100%";
-        progressBox.hidden = false;
         setBusy(false);
         showResult(file, message.bytes, message.report);
         return;

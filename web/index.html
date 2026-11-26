@@ -6,143 +6,235 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>prensa: optimize EPUBs for your e-reader</title>
-  <meta name="description" content="Optimize an EPUB for the Xteink X4 or X3 in your browser. Your file never leaves your device.">
+  <title>prensa: every image, sharp, on your Xteink</title>
+  <meta name="description" content="Fix EPUBs for the Xteink X4 and X3 on CrossPoint: diagrams that vanish, blurry illustrations, heavy files. Runs in your browser; your book never leaves your device.">
+  <meta name="theme-color" content="#f4f3ef">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="prensa">
+  <meta property="og:title" content="prensa: every image, sharp, on your Xteink">
+  <meta property="og:description" content="Fix EPUBs for CrossPoint in your browser: diagrams that vanish, blurry illustrations, heavy files. Nothing is uploaded.">
+  <meta property="og:url" content="https://eosalinas.github.io/prensa/">
+  <meta property="og:image" content="https://eosalinas.github.io/prensa/images/og.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The same page of Pro Git on an Xteink: before, the diagram is an empty frame; after prensa, it is visible.">
+  <meta name="twitter:card" content="summary_large_image">
+
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-  <link rel="stylesheet" href="style.css?v=20261121-3">
+  <link rel="stylesheet" href="style.css?v=20261126-1">
 </head>
 <body>
+  <a class="skip-link" href="#tool">Skip to the optimizer</a>
+
   <header class="site-header">
     <a class="brand" href="./" aria-label="prensa home">
-      <img class="brand-mark" src="./favicon.svg" alt="" aria-hidden="true">
+      <img class="brand-mark" src="./favicon.svg" alt="" width="32" height="32">
       <span class="wordmark">prensa</span>
     </a>
-    <p>An EPUB optimizer for the CrossPoint ecosystem</p>
+    <nav aria-label="Main">
+      <a href="#proof">Before and after</a>
+      <a href="#how">How it works</a>
+      <a href="https://github.com/eoSalinas/prensa" rel="noopener">GitHub</a>
+    </nav>
   </header>
 
   <main>
-    <section class="intro" aria-labelledby="page-title">
-      <div class="intro-copy">
-        <p class="eyebrow">Less weight. The same reading experience.</p>
-        <h1 id="page-title">Take your books wherever you go.</h1>
-        <p class="lede">Make your EPUB light for your e-reader while keeping your data on your device.</p>
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="eyebrow">For Xteink readers on CrossPoint</p>
+        <h1 id="page-title">Every image, sharp, on your Xteink.</h1>
+        <p class="lede">Diagrams that vanish, blurry illustrations, books too heavy for the reader: prensa fixes them in a new copy of your EPUB.</p>
+        <ul class="facts">
+          <li>Runs in your browser. Nothing is uploaded.</li>
+          <li>Your original file is not changed.</li>
+          <li>Free and open source.</li>
+        </ul>
       </div>
-      <div class="reader-visual" aria-hidden="true">
-        <div class="reader-shadow"></div>
-        <div class="reader">
-          <div class="reader-screen">
-            <span class="chapter">CHAPTER I</span>
-            <strong>A new way<br>to read</strong>
-            <span class="reader-rule"></span>
-            <p>Read more. Carry less.</p>
-            <span class="reader-page">1 / 248</span>
+
+      <div id="tool" class="reader" tabindex="-1">
+        <div class="screen">
+          <form id="options" aria-label="Optimize an EPUB">
+            <div class="step">
+              <h2 class="step-title"><span class="step-number" aria-hidden="true">1</span> Choose a book</h2>
+              <div id="drop" class="drop">
+                <input id="file" type="file" accept=".epub,application/epub+zip" aria-describedby="file-hint">
+                <label for="file">
+                  <span class="drop-title">Choose an EPUB</span>
+                  <span id="file-hint" class="drop-hint">or drop it here</span>
+                </label>
+                <p id="file-name" class="file-name" hidden></p>
+              </div>
+            </div>
+
+            <fieldset class="step">
+              <legend class="step-title"><span class="step-number" aria-hidden="true">2</span> Choose your reader</legend>
+              <div class="devices">
+                <label class="device">
+                  <input type="radio" name="device" value="x4" checked>
+                  <span class="device-art device-art--x4" aria-hidden="true"></span>
+                  <span class="device-text">
+                    <span class="device-name">X4</span>
+                    <span class="device-note">Also X4 Pro and X4 Classic</span>
+                  </span>
+                </label>
+                <label class="device">
+                  <input type="radio" name="device" value="x3">
+                  <span class="device-art device-art--x3" aria-hidden="true"></span>
+                  <span class="device-text">
+                    <span class="device-name">X3</span>
+                    <span class="device-note">Not yet tested on the device</span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+
+            <details class="advanced">
+              <summary>Advanced options</summary>
+              <div class="grid">
+                <p class="field">
+                  <label for="maxSize">Maximum size (px)</label>
+                  <input id="maxSize" name="maxSize" type="number" min="100" step="10" placeholder="Reader default">
+                </p>
+                <p class="field">
+                  <label for="quality">JPEG quality (1 to 100)</label>
+                  <input id="quality" name="quality" type="number" min="1" max="100" value="80" required>
+                </p>
+                <p class="field">
+                  <label for="sharpen">Sharpening (0 to 100%; 0 = off)</label>
+                  <input id="sharpen" name="sharpen" type="number" min="0" max="100" value="0" required>
+                </p>
+                <p class="field">
+                  <label for="rotate">Rotation</label>
+                  <select id="rotate" name="rotate">
+                    <option value="auto">Turn wide diagrams</option>
+                    <option value="none">Never turn</option>
+                  </select>
+                </p>
+              </div>
+            </details>
+
+            <button id="run" class="button" type="submit" disabled>Optimize book</button>
+          </form>
+
+          <div id="progress-box" class="progress" hidden>
+            <p id="prog-title" class="progress-label">Optimizing…</p>
+            <div class="meter">
+              <progress id="progress" max="100" value="0" aria-labelledby="prog-title"></progress>
+              <span id="percent">0%</span>
+            </div>
           </div>
+
+          <p id="error" class="error" role="alert" hidden></p>
+
+          <section id="result" class="result" aria-labelledby="res-title" tabindex="-1" hidden>
+            <h2 id="res-title" class="result-title">Your book is ready</h2>
+            <p class="result-sizes">
+              <span id="size-before"></span>
+              <span class="arrow" aria-label="to">→</span>
+              <span id="size-after"></span>
+            </p>
+            <p id="result-summary" class="result-summary"></p>
+            <a id="download" class="button" href="#">Download optimized EPUB</a>
+            <p class="hint">Copy it to your reader like any other book.</p>
+
+            <details class="result-details">
+              <summary>Details</summary>
+              <dl id="report"></dl>
+              <p class="hint">Sizes compare the whole EPUB, not just the images.</p>
+            </details>
+
+            <div id="warnings" class="warnings" hidden>
+              <h3>Warnings</h3>
+              <ul id="warning-list"></ul>
+            </div>
+            <!-- Feedback link (#61) goes here. -->
+          </section>
         </div>
       </div>
     </section>
 
-    <div class="screen">
-      <section id="pick" aria-labelledby="pick-title">
-        <div class="section-heading">
-          <span class="step">1</span>
-          <h2 id="pick-title">Choose a book</h2>
-        </div>
-        <div id="drop" class="drop">
-          <input id="file" type="file" accept=".epub,application/epub+zip" aria-describedby="file-hint">
-          <span class="upload-icon" aria-hidden="true">↗</span>
-          <label for="file">Choose an EPUB file</label>
-          <span id="file-hint" class="hint">or drop it here</span>
-        </div>
-        <p id="file-name" class="hint" hidden></p>
-      </section>
+    <section id="proof" class="band" aria-labelledby="proof-title">
+      <h2 id="proof-title">Before and after</h2>
+      <p class="band-lede">The same page on an Xteink X4 Pro running CrossPoint: the original book, then the copy from prensa.</p>
 
-      <form id="options" aria-labelledby="opt-title">
-        <div class="section-heading">
-          <span class="step">2</span>
-          <h2 id="opt-title">Choose your device</h2>
-        </div>
-        <p class="field">
-          <label for="device">Device</label>
-          <select id="device" name="device">
-            <option value="x4">Xteink X4</option>
-            <option value="x3">Xteink X3</option>
-          </select>
-        </p>
-
-        <details>
-          <summary>Advanced options</summary>
-          <div class="grid">
-            <p class="field">
-              <label for="maxSize">Maximum size (px)</label>
-              <input id="maxSize" name="maxSize" type="number" min="100" step="10" placeholder="Device default">
-            </p>
-            <p class="field">
-              <label for="quality">JPEG quality (1 to 100)</label>
-              <input id="quality" name="quality" type="number" min="1" max="100" value="80" required>
-            </p>
-            <p class="field">
-              <label for="sharpen">Sharpening (0 to 100%; 0 = off)</label>
-              <input id="sharpen" name="sharpen" type="number" min="0" max="100" value="0" required>
-            </p>
-            <p class="field">
-              <label for="rotate">Rotation</label>
-              <select id="rotate" name="rotate">
-                <option value="auto">Automatically rotate wide images</option>
-                <option value="none">Never rotate</option>
-              </select>
-            </p>
+      <div class="cases">
+        <article class="case" aria-labelledby="case-missing">
+          <h3 id="case-missing">Missing image → visible</h3>
+          <p>CrossPoint silently drops wide PNG diagrams. prensa fits them to the screen, so they show up.</p>
+          <div class="pair">
+            <figure>
+              <img src="images/progit-fig10-before.jpg" width="600" height="800" loading="lazy" alt="Before: where the diagram should be, an empty frame.">
+              <figcaption>Before</figcaption>
+            </figure>
+            <figure>
+              <img src="images/progit-fig10-after.jpg" width="600" height="800" loading="lazy" alt="After: the diagram of commits and their parents is visible.">
+              <figcaption>After</figcaption>
+            </figure>
           </div>
-        </details>
+          <p class="source">Pro Git, Figure 10. 24 of the book’s 188 images were missing; after prensa, all of them show.</p>
+        </article>
 
-        <button id="run" type="submit" disabled>
-          <span>Optimize book</span>
-          <span aria-hidden="true">→</span>
-        </button>
-      </form>
+        <article class="case" aria-labelledby="case-blurry">
+          <h3 id="case-blurry">Blurry → sharp</h3>
+          <p>CrossPoint shows progressive JPEGs at 1/8 of their resolution. prensa rewrites them so they show in full.</p>
+          <div class="pair">
+            <figure>
+              <img src="images/alice-progressive-before.jpg" width="600" height="800" loading="lazy" alt="Before: the illustration of Alice is blocky and blurred.">
+              <figcaption>Before</figcaption>
+            </figure>
+            <figure>
+              <img src="images/alice-progressive-after.jpg" width="600" height="800" loading="lazy" alt="After: the illustration of Alice is sharp.">
+              <figcaption>After</figcaption>
+            </figure>
+          </div>
+          <p class="source">Alice’s Adventures in Wonderland, illustrated by Arthur Rackham.</p>
+        </article>
+      </div>
 
-      <section id="progress-box" aria-labelledby="prog-title" hidden>
-        <div class="section-heading">
-          <span class="step">3</span>
-          <h2 id="prog-title">Optimizing</h2>
-        </div>
-        <div class="meter">
-          <progress id="progress" max="100" value="0" aria-labelledby="prog-title"></progress>
-          <span id="percent">0%</span>
-        </div>
-      </section>
+      <p class="sizes">And lighter books: <strong>Pro Git 13.99 MB → 2.68 MB (−81%)</strong>, Mastering Bitcoin 6.6 MB → 2.0 MB (−70%).</p>
+    </section>
 
-      <p id="error" role="alert" hidden></p>
+    <section id="how" class="band" aria-labelledby="how-title">
+      <h2 id="how-title">How it works</h2>
+      <ol class="how">
+        <li>
+          <h3>Choose a book</h3>
+          <p>Any EPUB from your computer or phone. It is read by this page and never sent anywhere.</p>
+        </li>
+        <li>
+          <h3>Optimize</h3>
+          <p>Every image is fitted to your reader’s screen, converted to grayscale and saved in a format CrossPoint shows in full. Embedded fonts are removed. The text stays the same.</p>
+        </li>
+        <li>
+          <h3>Copy it to your reader</h3>
+          <p>Download the new EPUB and copy it to your reader like any other book. Your original file is left as it was.</p>
+        </li>
+      </ol>
+      <!-- Guarantees and limitations (#62) go here. -->
+    </section>
 
-      <section id="result" aria-labelledby="res-title" tabindex="-1" hidden>
-        <div class="section-heading">
-          <span class="step">✓</span>
-          <h2 id="res-title">Your book is ready</h2>
-        </div>
-        <a id="download" class="button" href="#"><span>Download optimized EPUB</span><span aria-hidden="true">↓</span></a>
-        <p class="hint">File size changes compare the complete EPUB, not just the images.</p>
-        <dl id="report"></dl>
-        <div id="warnings" hidden>
-          <h3>Warnings</h3>
-          <ul id="warning-list"></ul>
-        </div>
-      </section>
-    </div>
+    <section class="band more" aria-label="More">
+      <div>
+        <h2>Prefer the terminal?</h2>
+        <p>The same optimizer as a command-line tool, for one book or a whole library.</p>
+        <pre><code>cargo install prensa-cli
+prensa book.epub book-optimized.epub</code></pre>
+      </div>
+      <div>
+        <h2>Help make it better</h2>
+        <p>prensa is open source. Reports from real books and readers help most; issues marked <a href="https://github.com/eoSalinas/prensa/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22" rel="noopener">good first issue</a> are a good place to start with code.</p>
+        <p><a href="https://github.com/eoSalinas/prensa" rel="noopener">prensa on GitHub ↗</a></p>
+      </div>
+    </section>
 
-    <div class="trust-row" aria-label="Benefits">
-      <span><b>01</b> Local processing</span>
-      <span><b>02</b> Original file unchanged</span>
-      <span><b>03</b> Ready for your reader</span>
-    </div>
-    
     <p id="live" class="sr-only" role="status" aria-live="polite"></p>
-
   </main>
 
   <footer class="site-footer">
-    <p><strong>prensa</strong> is open source. Not affiliated with Xteink.</p>
-    <a href="https://github.com/eoSalinas/prensa" rel="noopener">View on GitHub ↗</a>
+    <p><strong>prensa</strong> · MIT or Apache-2.0 · Not affiliated with Xteink or CrossPoint.</p>
   </footer>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20261126-1"></script>
 </body>
 </html>
