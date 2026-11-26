@@ -8,11 +8,31 @@
   --line: #dad8ce;
   --bezel: #1c1b1a;
   --danger: #af3029;
-  --serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --serif: Literata, Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --page: min(100% - 2rem, 72rem);
   color-scheme: light;
+}
+
+/* Literata was made for reading books on screens; its optical size axis
+   tightens headings and opens up small text. Public Sans for the controls.
+   Both are self-hosted (latin subset, OFL, see fonts/LICENSE-*.txt): the page
+   makes no third-party requests. */
+@font-face {
+  font-family: Literata;
+  src: url("fonts/literata.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Public Sans";
+  src: url("fonts/public-sans.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
 
 *,
@@ -187,7 +207,7 @@ h1 {
 
 .lede {
   max-width: 32rem;
-  margin-top: 1.25rem;
+  margin-top: 1.5rem;
   color: var(--ink-soft);
   font-size: 1.2rem;
   line-height: 1.5;
